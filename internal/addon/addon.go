@@ -49,7 +49,7 @@ var defaultConfig = AddonConfig{
 // ParseConfig decodes a base64-encoded configuration payload or extracts
 // query fields from a URL query-styled parameters string.
 func ParseConfig(configStr string) AddonConfig {
-	config = defaultConfig
+	config := defaultConfig
 
 	if configStr == "" {
 		return config
@@ -245,8 +245,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 		return StreamHandlerResult{Streams: []Stream{}, CacheMaxAge: errorCacheMaxAge}, nil
 	}
 
-	// Dynamic alternative titles have already been fetched and injected directly into
-	// meta.AlternativeNames by the updated TMDB API resolver in meta.go
+	// Dynamic alternative titles are resolved dynamically using the TMDB API
 	allTitles := []string{meta.Name}
 	if meta.AlternativeNames != nil {
 		for _, alt := range meta.AlternativeNames {
@@ -300,60 +299,55 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 	var resultsMu sync.Mutex
 	totalFoundResults := 0
 
+	// Pipelined Continuous semaphore queue builder
 	runSearchPhase := func(queries []string) error {
-		for i := 0; i < len(queries); i += searchConcurrency {
+		var g errgroup.Group
+		sem := make(chan struct{}, searchConcurrency) // Buffered channel used as a continuous semaphore
+
+		for _, query := range queries {
 			if totalFoundResults >= totalMaxResults {
-				return nil
+				break
 			}
-			end := i + searchConcurrency
-			if end > len(queries) {
-				end = len(queries)
-			}
-			batch := queries[i:end]
 
-			var g errgroup.Group
-			batchResults := make([]searchResult, len(batch))
+			query := query
+			sem <- struct{}{} // Block and acquire slot
 
-			for j, query := range batch {
-				j, query := j, query
-				g.Go(func() error {
-					opts := api.SearchOptions{
-						Query: query,
+			g.Go(func() error {
+				defer func() { <-sem }() // Release slot immediately
+
+				opts := api.SearchOptions{Query: query}
+				res, err := easynewsAPI.SearchAll(opts)
+				if err != nil {
+					if IsAuthError(err) {
+						return err
 					}
-					res, err := easynewsAPI.SearchAll(opts)
-					if err != nil {
-						if IsAuthError(err) {
-							return err
-						}
-						return nil
-					}
-					batchResults[j] = searchResult{query: query, result: res}
 					return nil
-				})
-			}
+				}
 
-			if err := g.Wait(); err != nil {
-				return err
-			}
-
-			for _, sr := range batchResults {
-				if sr.query != "" && len(sr.result.Data) > 0 {
+				if len(res.Data) > 0 {
 					resultsMu.Lock()
-					allSearchResults = append(allSearchResults, sr)
+					allSearchResults = append(allSearchResults, searchResult{query: query, result: res})
 					resultsMu.Unlock()
 				}
-			}
-
-			uniqueHashes := make(map[string]struct{})
-			resultsMu.Lock()
-			for _, sr := range allSearchResults {
-				for _, f := range sr.result.Data {
-					uniqueHashes[f.GetHash()] = struct{}{}
-				}
-			}
-			resultsMu.Unlock()
-			totalFoundResults = len(uniqueHashes)
+				return nil
+			})
 		}
+
+		if err := g.Wait(); err != nil {
+			return err
+		}
+
+		// Update unique hash tracking values
+		uniqueHashes := make(map[string]struct{})
+		resultsMu.Lock()
+		for _, sr := range allSearchResults {
+			for _, f := range sr.result.Data {
+				uniqueHashes[f.GetHash()] = struct{}{}
+			}
+		}
+		resultsMu.Unlock()
+		totalFoundResults = len(uniqueHashes)
+
 		return nil
 	}
 
