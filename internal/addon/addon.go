@@ -89,11 +89,11 @@ func ParseConfig(configStr string) AddonConfig {
 }
 
 // ---------------------------------------------------------------------------
-// In-Memory Request Cache
+// In-Memory Request Cache (Optimized with pointers to bypass copy overhead)
 // ---------------------------------------------------------------------------
 
 var (
-	requestCache           = make(map[string]cacheItem)
+	requestCache           = make(map[string]*cacheItem)
 	requestCacheMu         sync.RWMutex
 	requestCacheMaxEntries = shared.ParseIntEnv("MAX_CACHE_ENTRIES", 1000)
 	emptyResultCacheMaxAge = 10 * 60 // 10 minutes in seconds
@@ -125,7 +125,7 @@ func setRequestCache(key string, data StreamHandlerResult, ttl time.Duration) {
 	requestCacheMu.Lock()
 	defer requestCacheMu.Unlock()
 
-	requestCache[key] = cacheItem{
+	requestCache[key] = &cacheItem{
 		data:      data,
 		expiresAt: time.Now().Add(ttl).UnixNano(),
 	}
@@ -191,7 +191,6 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 		return StreamHandlerResult{Streams: []Stream{}}, nil
 	}
 
-	// Cache key captures user config options to isolate requests safely
 	cacheKey := fmt.Sprintf("%s:v3:user=%s:strict=%s:lang=%s:sort=%s:qualities=%s:maxPerQuality=%s:maxSize=%s",
 		id,
 		config.Username,
@@ -245,7 +244,6 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 		return StreamHandlerResult{Streams: []Stream{}, CacheMaxAge: errorCacheMaxAge}, nil
 	}
 
-	// Dynamic alternative titles are resolved dynamically using the TMDB API
 	allTitles := []string{meta.Name}
 	if meta.AlternativeNames != nil {
 		for _, alt := range meta.AlternativeNames {
@@ -299,10 +297,10 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 	var resultsMu sync.Mutex
 	totalFoundResults := 0
 
-	// Pipelined Continuous semaphore queue builder
+	// Continuous Queue-Based Semaphore Pipeline (Optimized with panic-safeguard recover blocks)
 	runSearchPhase := func(queries []string) error {
 		var g errgroup.Group
-		sem := make(chan struct{}, searchConcurrency) // Buffered channel used as a continuous semaphore
+		sem := make(chan struct{}, searchConcurrency)
 
 		for _, query := range queries {
 			if totalFoundResults >= totalMaxResults {
@@ -310,10 +308,15 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 			}
 
 			query := query
-			sem <- struct{}{} // Block and acquire slot
+			sem <- struct{}{} // Block-acquire
 
 			g.Go(func() error {
-				defer func() { <-sem }() // Release slot immediately
+				defer func() {
+					if r := recover(); r != nil {
+						addonLogger.Error("Recovered from internal query execution panic for '%s': %v", query, r)
+					}
+					<-sem // Always release
+				}()
 
 				opts := api.SearchOptions{Query: query}
 				res, err := easynewsAPI.SearchAll(opts)
@@ -337,7 +340,6 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 			return err
 		}
 
-		// Update unique hash tracking values
 		uniqueHashes := make(map[string]struct{})
 		resultsMu.Lock()
 		for _, sr := range allSearchResults {
@@ -473,7 +475,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 		totalFilesSeen, rejectedSample, rejectedDuplicate, rejectedTitle, len(streams))
 
 	// -----------------------------------------------------------------------
-	// Low-Latency Sorting Pipeline
+	// Low-Latency Sorting Pipeline (With Defensive Pointer Safety checks)
 	// -----------------------------------------------------------------------
 
 	if len(streams) > 0 {
@@ -488,6 +490,15 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 			}
 
 			sortByQualityAndSize := func(a, b Stream) bool {
+				if a.SortMeta == nil && b.SortMeta == nil {
+					return false
+				}
+				if a.SortMeta == nil {
+					return false // Shift items lacking sort keys to bottom
+				}
+				if b.SortMeta == nil {
+					return true
+				}
 				if a.SortMeta.QualityScore != b.SortMeta.QualityScore {
 					return a.SortMeta.QualityScore > b.SortMeta.QualityScore
 				}
@@ -505,6 +516,15 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 		} else {
 			sort.Slice(streams, func(i, j int) bool {
 				a, b := streams[i].SortMeta, streams[j].SortMeta
+				if a == nil && b == nil {
+					return false
+				}
+				if a == nil {
+					return false // Shift items lacking sort keys to bottom
+				}
+				if b == nil {
+					return true
+				}
 				switch sortingPreference {
 				case "size_first":
 					sizeCompare := CompareSizeMeta(a, b)
@@ -594,14 +614,15 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 			}
 		}
 
-		// 2. Max File Size filter
+		// 2. Max File Size filter (With defensive pointer dereference checks)
 		if maxFileSizeGB > 0 {
 			filtered := make([]Stream, 0, len(streams))
 			for _, s := range streams {
-				if s.BehaviorHints == nil {
-					continue
+				videoSize := int64(0)
+				if s.BehaviorHints != nil {
+					videoSize = s.BehaviorHints.VideoSize
 				}
-				videoSize := s.BehaviorHints.VideoSize
+
 				if videoSize > 0 {
 					sizeGB := float64(videoSize) / (1024 * 1024 * 1024)
 					if sizeGB <= maxFileSizeGB {
