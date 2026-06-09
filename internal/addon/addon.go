@@ -202,7 +202,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 		config.MaxFileSize,
 	)
 
-	if cached, ok := getFromRequestCache(cacheKey); ok {
+	if cached, ok := getFromRequestCache(key); ok {
 		return cached, nil
 	}
 
@@ -244,6 +244,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 		return StreamHandlerResult{Streams: []Stream{}, CacheMaxAge: errorCacheMaxAge}, nil
 	}
 
+	// Dynamic alternative titles are resolved dynamically using the TMDB API
 	allTitles := []string{meta.Name}
 	if meta.AlternativeNames != nil {
 		for _, alt := range meta.AlternativeNames {
@@ -794,7 +795,8 @@ func MapStream(duration, size, fullResolution, title, fileExtension string, vide
 		name += "\n" + quality
 	}
 
-	description := fmt.Sprintf("%s%s\n\u23f2 %s\n\ud83d\udce6 %s %s\n%s",
+	// Statically formatted emoji literal characters to ensure safe cross-platform UTF-8 compilation
+	description := fmt.Sprintf("%s%s\n🕛 %s\n📦 %s %s\n%s",
 		title, fileExtension,
 		coalesce(duration, "unknown duration"),
 		coalesce(size, "unknown size"),
