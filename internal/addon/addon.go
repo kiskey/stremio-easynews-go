@@ -49,7 +49,7 @@ var defaultConfig = AddonConfig{
 // ParseConfig decodes a base64-encoded configuration payload or extracts
 // query fields from a URL query-styled parameters string.
 func ParseConfig(configStr string) AddonConfig {
-	config := defaultConfig
+	config = defaultConfig
 
 	if configStr == "" {
 		return config
@@ -245,15 +245,14 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 		return StreamHandlerResult{Streams: []Stream{}, CacheMaxAge: errorCacheMaxAge}, nil
 	}
 
+	// Dynamic alternative titles have already been fetched and injected directly into
+	// meta.AlternativeNames by the updated TMDB API resolver in meta.go
 	allTitles := []string{meta.Name}
-	if alts, ok := customTitles[meta.Name]; ok && len(alts) > 0 {
-		allTitles = append(allTitles, alts...)
-	}
 	if meta.AlternativeNames != nil {
 		for _, alt := range meta.AlternativeNames {
 			found := false
 			for _, t := range allTitles {
-				if t == alt {
+				if strings.EqualFold(t, alt) {
 					found = true
 					break
 				}
@@ -261,19 +260,6 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 			if !found {
 				allTitles = append(allTitles, alt)
 			}
-		}
-	}
-	additionalTitles := GetAlternativeTitles(meta.Name, customTitles)
-	for _, alt := range additionalTitles {
-		found := false
-		for _, t := range allTitles {
-			if t == alt {
-				found = true
-				break
-			}
-		}
-		if !found && alt != meta.Name {
-			allTitles = append(allTitles, alt)
 		}
 	}
 
@@ -680,7 +666,6 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 				streamsByQuality[category] = append(streamsByQuality[category], s)
 			}
 			var limited []Stream
-			// Build ordered array to preserve quality sorting order
 			orderKeys := []string{"4k", "1080p", "720p", "480p", "other"}
 			for _, k := range orderKeys {
 				qStreams := streamsByQuality[k]
@@ -794,7 +779,7 @@ func MapStream(duration, size, fullResolution, title, fileExtension string, vide
 		name += "\n" + quality
 	}
 
-	description := fmt.Sprintf("%s%s\n🕛 %s\n📦 %s %s\n%s",
+	description := fmt.Sprintf("%s%s\n\u23f2 %s\n\ud83d\udce6 %s %s\n%s",
 		title, fileExtension,
 		coalesce(duration, "unknown duration"),
 		coalesce(size, "unknown size"),
