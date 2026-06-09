@@ -42,6 +42,23 @@ type ManifestResource struct {
 	IDPrefixes []string `json:"idPrefixes,omitempty"`
 }
 
+// Read-only package-level static UI language mapping to avoid dynamic map allocations
+var staticUiLanguageOptions = map[string]string{
+	"eng": "English",
+	"ger": "Deutsch (German)",
+	"spa": "Español (Spanish)",
+	"fre": "Français (French)",
+	"ita": "Italiano (Italian)",
+	"jpn": "日本語 (Japanese)",
+	"por": "Português (Portuguese)",
+	"rus": "Русский (Russian)",
+	"kor": "한국어 (Korean)",
+	"chi": "中文 (Chinese)",
+	"dut": "Nederlands (Dutch)",
+	"rum": "Română (Romanian)",
+	"bul": "Български (Bulgarian)",
+}
+
 // BuildManifest constructs the Stremio manifest with default English labels.
 func BuildManifest() Manifest {
 	t := i18n.GetTranslations("eng")
@@ -71,7 +88,7 @@ func BuildManifest() Manifest {
 				Title:   t.Form.UILanguage,
 				Key:     "uiLanguage",
 				Type:    "select",
-				Options: uiLanguageOptions(),
+				Options: staticUiLanguageOptions,
 				Default: "eng",
 			},
 			{
@@ -130,44 +147,28 @@ func BuildManifest() Manifest {
 	}
 }
 
-func uiLanguageOptions() map[string]string {
-	return map[string]string{
-		"eng": "English",
-		"ger": "Deutsch (German)",
-		"spa": "Español (Spanish)",
-		"fre": "Français (French)",
-		"ita": "Italiano (Italian)",
-		"jpn": "日本語 (Japanese)",
-		"por": "Português (Portuguese)",
-		"rus": "Русский (Russian)",
-		"kor": "한국어 (Korean)",
-		"chi": "中文 (Chinese)",
-		"dut": "Nederlands (Dutch)",
-		"rum": "Română (Romanian)",
-		"bul": "Български (Bulgarian)",
-	}
-}
-
 func sortingOptionsMap(t i18n.TranslationKeys) map[string]string {
-	return map[string]string{
-		"quality_first":  t.SortingOptions.QualityFirst,
-		"language_first": t.SortingOptions.LanguageFirst,
-		"size_first":     t.SortingOptions.SizeFirst,
-		"date_first":     t.SortingOptions.DateFirst,
-	}
+	// Pre-allocated map size to prevent resizing dynamic allocations
+	m := make(map[string]string, 4)
+	m["quality_first"] = t.SortingOptions.QualityFirst
+	m["language_first"] = t.SortingOptions.LanguageFirst
+	m["size_first"] = t.SortingOptions.SizeFirst
+	m["date_first"] = t.SortingOptions.DateFirst
+	return m
 }
 
 func qualityOptionsMap(t i18n.TranslationKeys) map[string]string {
-	return map[string]string{
-		"4k,1080p,720p,480p": t.QualityOptions.AllQualities,
-		"4k":                 "4K/UHD/2160p",
-		"1080p":              "1080p/FHD",
-		"720p":               "720p/HD",
-		"480p":               "480p/SD",
-		"4k,1080p":           "4K + 1080p",
-		"1080p,720p":         "1080p + 720p",
-		"720p,480p":          "720p + 480p",
-		"4k,1080p,720p":      "4K + 1080p + 720p",
-		"1080p,720p,480p":    "1080p + 720p + 480p",
-	}
+	// Pre-allocated map size to prevent resizing dynamic allocations
+	m := make(map[string]string, 10)
+	m["4k,1080p,720p,480p"] = t.QualityOptions.AllQualities
+	m["4k"] = "4K/UHD/2160p"
+	m["1080p"] = "1080p/FHD"
+	m["720p"] = "720p/HD"
+	m["480p"] = "480p/SD"
+	m["4k,1080p"] = "4K + 1080p"
+	m["1080p,720p"] = "1080p + 720p"
+	m["720p,480p"] = "720p + 480p"
+	m["4k,1080p,720p"] = "4K + 1080p + 720p"
+	m["1080p,720p,480p"] = "1080p + 720p + 480p"
+	return m
 }
