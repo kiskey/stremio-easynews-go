@@ -8,18 +8,19 @@ RUN apk --no-cache add ca-certificates
 
 WORKDIR /app
 
-# Cache Go modules first to optimize build layers
-COPY go.mod ./
-RUN go mod download
-
-# Copy source tree and compile
+# Copy all source code (including custom-titles.json from root)
 COPY . .
 
-# Build flags optimized for minimal footprint and maximum security:
-# - CGO_ENABLED=0: Statically links libc to ensure native compatibility on Alpine
-# - -ldflags="-s -w": Strips debugging schemas to decrease binary size
+# Move custom-titles.json into the correct package folder for compiled embedding.
+# Fallback to creating a blank JSON map if the file is missing in the repository root.
+RUN cp custom-titles.json ./internal/addon/ || echo "{}" > ./internal/addon/custom-titles.json
+
+# Resolve all dependencies dynamically and generate go.sum checksum entries
+RUN go mod tidy
+
+# Build static binary optimized for size and security
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build -ldflags="-s -w -X github.com/kiskey/stremio-easynews-go/internal/shared.Version=prod" \
+    go build -trimpath -ldflags="-s -w -X github.com/kiskey/stremio-easynews-go/internal/shared.Version=prod" \
     -o stremio-easynews cmd/addon/main.go
 
 # ===========================================================================
@@ -27,10 +28,10 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
 # ===========================================================================
 FROM alpine:latest
 
-# Install runtime dependencies (e.g., timezone databases and root CA certs)
+# Install runtime dependencies (timezone databases and root CA certs)
 RUN apk --no-cache add ca-certificates tzdata
 
-# Create a secure, unprivileged service account
+# Create secure unprivileged system account
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 
 WORKDIR /app
@@ -41,7 +42,7 @@ COPY --from=builder /app/stremio-easynews .
 # Enforce secure user execution
 USER appuser
 
-# Expose standard gateway port
+# Expose default Stremio gateway port
 EXPOSE 1337
 
 # Define execution command
