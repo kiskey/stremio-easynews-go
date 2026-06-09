@@ -1,6 +1,7 @@
 package resolve
 
 import (
+	"io"
 	"net/http"
 	"time"
 
@@ -8,9 +9,23 @@ import (
 	"github.com/kiskey/stremio-easynews-go/internal/shared"
 )
 
-// CreateResolveHandler constructs a high-performance, short-circuiting redirect resolver.
+// CreateResolveHandler builds the Gin handler for GET /resolve/:payload/:filename
 func CreateResolveHandler(logger shared.Logger) gin.HandlerFunc {
 	timeoutMs := shared.ParseIntEnv("RESOLVE_TIMEOUT_MS", 20000)
+
+	// Share a single highly optimized client instance to reuse TCP/TLS connection pool across all resolves
+	client := &http.Client{
+		Timeout: time.Duration(timeoutMs) * time.Millisecond,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			// Prevent the client from following redirects and downloading video content
+			return http.ErrUseLastResponse
+		},
+		Transport: &http.Transport{
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 100,
+			IdleConnTimeout:     90 * time.Second,
+		},
+	}
 
 	return func(c *gin.Context) {
 		payload := c.Param("payload")
@@ -32,15 +47,6 @@ func CreateResolveHandler(logger shared.Logger) gin.HandlerFunc {
 			return
 		}
 
-		// 3. Instantiate an HTTP client configured to short-circuit on redirects
-		client := &http.Client{
-			Timeout: time.Duration(timeoutMs) * time.Millisecond,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				// Prevent the client from following redirects and downloading video content
-				return http.ErrUseLastResponse
-			},
-		}
-
 		req, err := http.NewRequestWithContext(c.Request.Context(), "GET", target.CleanUrl, nil)
 		if err != nil {
 			logger.Error("Failed to build resolve HTTP request: %v", err)
@@ -58,7 +64,11 @@ func CreateResolveHandler(logger shared.Logger) gin.HandlerFunc {
 			c.String(http.StatusBadGateway, "Error resolving stream")
 			return
 		}
-		defer resp.Body.Close()
+		defer func() {
+			// Drain remaining bytes to allow socket recycling
+			_, _ = io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+		}()
 
 		// 4. Intercept the geography-aware CDN redirect URL from the response location header
 		location := resp.Header.Get("Location")
