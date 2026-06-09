@@ -20,7 +20,7 @@ jobs:
       - name: Check out Source Code
         uses: actions/checkout@v4
 
-      - name: Set up QEMU (For Multi-Platform Support if needed)
+      - name: Set up QEMU (For Multi-Platform Support)
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
