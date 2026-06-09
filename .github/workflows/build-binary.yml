@@ -28,13 +28,24 @@ jobs:
           go-version: '1.23'
           cache: true # Automatically cache Go module downloads and build cache
 
-      - name: Fetch Go Module Dependencies
-        run: go mod download
+      - name: Copy embedded assets to package directory
+        run: |
+          # Go's embed directive requires the file to be in the same package directory or subfolder
+          if [ -f "custom-titles.json" ]; then
+            cp custom-titles.json internal/addon/
+          else
+            # Create a fallback empty JSON map if custom-titles.json is not present in root
+            echo "{}" > internal/addon/custom-titles.json
+          fi
+
+      - name: Tidy Go Modules
+        run: |
+          # Dynamically resolve imports and generate go.sum checksum entries
+          go mod tidy
 
       - name: Extract Release Version
         id: vars
         run: |
-          # Use Git Tag as Version, fall back to short Git Commit SHA if not a tag push
           if [[ "${{ github.ref_type }}" == "tag" ]]; then
             echo "VERSION=${{ github.ref_name }}" >> $GITHUB_OUTPUT
           else
