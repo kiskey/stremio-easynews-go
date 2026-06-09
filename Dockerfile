@@ -8,12 +8,8 @@ RUN apk --no-cache add ca-certificates
 
 WORKDIR /app
 
-# Copy all source code (including custom-titles.json from root)
+# Copy all source code
 COPY . .
-
-# Move custom-titles.json into the correct package folder for compiled embedding.
-# Fallback to creating a blank JSON map if the file is missing in the repository root.
-RUN cp custom-titles.json ./internal/addon/ || echo "{}" > ./internal/addon/custom-titles.json
 
 # Resolve all dependencies dynamically and generate go.sum checksum entries
 RUN go mod tidy
