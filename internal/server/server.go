@@ -29,7 +29,7 @@ func ServeHTTP(port int) {
 	}
 
 	r := gin.New()
-	r.Use(gin.Recovery())
+	r.Use(gin.Recovery()) // Protects the master daemon from crashing on runtime exceptions
 	r.Use(corsMiddleware())
 	r.Use(requestLogger())
 
