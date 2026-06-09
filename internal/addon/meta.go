@@ -26,6 +26,15 @@ var (
 const metaFetchTimeout = 5000 * time.Millisecond
 
 // ---------------------------------------------------------------------------
+// Structural Cache Mappings (Restored to fix Go compilation errors)
+// ---------------------------------------------------------------------------
+
+type tmdbIDMapping struct {
+	id      int
+	isMovie bool
+}
+
+// ---------------------------------------------------------------------------
 // Thread-Safe Bounded Generic Cache Structure (With Double-Checked Locks)
 // ---------------------------------------------------------------------------
 
