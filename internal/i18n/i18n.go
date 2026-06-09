@@ -88,7 +88,10 @@ type Errors struct {
 	AuthFailed string
 }
 
-// ISOToLanguage maps ISO 639-2 (3-letter) codes to internal Language codes.
+// ---------------------------------------------------------------------------
+// Thread-Safe Read-Only Package Global Maps (Zero-allocation at runtime)
+// ---------------------------------------------------------------------------
+
 var ISOToLanguage = map[string]Language{
 	"eng": EN, "ger": DE, "spa": ES, "fre": FR, "ita": IT,
 	"jpn": JA, "por": PT, "rus": RU, "kor": KO, "chi": ZH,
@@ -96,12 +99,23 @@ var ISOToLanguage = map[string]Language{
 	"":    EN,
 }
 
-// AdditionalLanguageCodes maps additional ISO 639-2 codes to ISO 639-1 (for TMDB compatibility).
 var AdditionalLanguageCodes = map[string]string{
 	"ara": "ar", "cze": "cs", "dan": "da", "fin": "fi", "gre": "el",
 	"heb": "he", "hin": "hi", "hun": "hu", "ice": "is", "ind": "id",
 	"may": "ms", "nor": "no", "per": "fa", "pol": "pl", "swe": "sv",
 	"tha": "th", "tur": "tr", "ukr": "uk", "vie": "vi",
+}
+
+var iso1Map = map[Language]string{
+	EN: "en", DE: "de", ES: "es", FR: "fr", IT: "it",
+	JA: "ja", PT: "pt", RU: "ru", KO: "ko", ZH: "zh",
+	NL: "nl", RO: "ro", BG: "bg",
+}
+
+var iso1ToISO3Map = map[string]string{
+	"en": "eng", "de": "ger", "es": "spa", "fr": "fre", "it": "ita",
+	"ja": "jpn", "pt": "por", "ru": "rus", "ko": "kor", "zh": "chi",
+	"nl": "dut", "ro": "rum", "bg": "bul",
 }
 
 // DEFAULT_UI_LANGUAGE represents the default 3-letter UI language code.
@@ -150,7 +164,7 @@ var LanguageDisplayNames = map[string]string{
 	"chi": "中文 (Chinese)", "dut": "Nederlands (Dutch)", "rum": "Română (Romanian)",
 	"bul": "Български (Bulgarian)",
 	"ara": "Arabic (العربية)", "cze": "Czech (Čeština)", "dan": "Danish (Dansk)",
-	"fin": "Finnish (Suomi)", "gre": "Greek (Ελληνικά)", "heb": "Hebrew (עברית)",
+	"fin": "Finnish (Suomi)", "gre": "Greek (Ελληνικά)", "heb": "Hebrew (עบริत)",
 	"hin": "Hindi (हिन्दी)", "hun": "Hungarian (Magyar)", "ice": "Icelandic (Íslenska)",
 	"ind": "Indonesian (Bahasa Indonesia)", "may": "Malay (Bahasa Melayu)",
 	"nor": "Norwegian (Norsk)", "per": "Persian (فارسی)", "pol": "Polish (Polski)",
@@ -291,7 +305,7 @@ var translations = map[Language]TranslationKeys{
 			French:       "Francés (Français)",
 			Italian:      "Italiano",
 			Japanese:     "Japonés (日本語)",
-			Portuguese:   "Portugués (Português)",
+			Portuguese:   "Português (Português)",
 			Russian:      "Ruso (Русский)",
 			Korean:       "Coreano (한국어)",
 			Chinese:      "Chino (中文)",
@@ -684,7 +698,7 @@ var translations = map[Language]TranslationKeys{
 			Italian:      "Italiaans (Italiano)",
 			Japanese:     "Japans (日本語)",
 			Portuguese:   "Portugees (Português)",
-			Russian:      "Russisch (Русский)",
+			Russian:      "Russisch (Russisch)",
 			Korean:       "Koreaans (한국어)",
 			Chinese:      "Chinees (中文)",
 			Dutch:        "Nederlands",
@@ -803,12 +817,7 @@ var translations = map[Language]TranslationKeys{
 // ConvertToTMDBLanguageCode converts a 3-letter UI language code to a 2-letter TMDB language code.
 func ConvertToTMDBLanguageCode(langCode string) string {
 	if t, ok := ISOToLanguage[langCode]; ok {
-		iso1 := map[Language]string{
-			EN: "en", DE: "de", ES: "es", FR: "fr", IT: "it",
-			JA: "ja", PT: "pt", RU: "ru", KO: "ko", ZH: "zh",
-			NL: "nl", RO: "ro", BG: "bg",
-		}
-		return iso1[t]
+		return iso1Map[t]
 	}
 	if code, ok := AdditionalLanguageCodes[langCode]; ok {
 		return code
@@ -818,12 +827,7 @@ func ConvertToTMDBLanguageCode(langCode string) string {
 
 // ConvertToISO6392 maps a 2-letter ISO 639-1 language code back to our 3-letter codes.
 func ConvertToISO6392(iso1 string) string {
-	rev := map[string]string{
-		"en": "eng", "de": "ger", "es": "spa", "fr": "fre", "it": "ita",
-		"ja": "jpn", "pt": "por", "ru": "rus", "ko": "kor", "zh": "chi",
-		"nl": "dut", "ro": "rum", "bg": "bul",
-	}
-	if v, ok := rev[strings.ToLower(iso1)]; ok {
+	if v, ok := iso1ToISO3Map[strings.ToLower(iso1)]; ok {
 		return v
 	}
 	return iso1
