@@ -3,6 +3,7 @@ package addon
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -25,7 +26,7 @@ var (
 const metaFetchTimeout = 5000 * time.Millisecond
 
 // ---------------------------------------------------------------------------
-// Thread-Safe Bounded Generic Cache structure
+// Thread-Safe Bounded Generic Cache Structure (With Double-Checked Locks)
 // ---------------------------------------------------------------------------
 
 type cacheEntry[V any] struct {
@@ -58,7 +59,11 @@ func (c *BoundedCache[K, V]) Get(key K) (V, bool) {
 	}
 	if time.Now().UnixNano() > entry.expiresAt {
 		c.mu.Lock()
-		delete(c.data, key)
+		// Double-Checked Locking: Verify again under write lock to prevent race deletion of newly written fresh items
+		entryCheck, okCheck := c.data[key]
+		if okCheck && time.Now().UnixNano() > entryCheck.expiresAt {
+			delete(c.data, key)
+		}
 		c.mu.Unlock()
 		var zero V
 		return zero, false
@@ -93,7 +98,7 @@ var (
 	imdbToTMDBIDCache    = NewBoundedCache[string, tmdbIDMapping](2000, 48*time.Hour)
 	tmdbAltTitlesCache   = NewBoundedCache[string, []string](2000, 24*time.Hour)
 	
-	// Singleflight Groups (CRITICAL FOR ELIMINATING CACHE STAMPEDES)
+	// Singleflight Groups (Locks parallel, duplicate queries into a single execution)
 	tmdbIDSingleflight    singleflight.Group
 	altTitlesSingleflight singleflight.Group
 )
@@ -138,7 +143,6 @@ func resolveTMDBID(imdbID string) (int, bool, error) {
 		return val.id, val.isMovie, nil
 	}
 
-	// Singleflight locks parallel, duplicate queries into a single execution
 	res, err, _ := tmdbIDSingleflight.Do(imdbID, func() (interface{}, error) {
 		if val, ok := imdbToTMDBIDCache.Get(imdbID); ok {
 			return val, nil
@@ -154,7 +158,10 @@ func resolveTMDBID(imdbID string) (int, bool, error) {
 		if err != nil {
 			return tmdbIDMapping{}, err
 		}
-		defer resp.Body.Close()
+		defer func() {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+		}()
 
 		if resp.StatusCode == 401 {
 			useTMDB = false
@@ -240,7 +247,10 @@ func getTMDBAlternativeTitles(imdbID string) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		defer resp.Body.Close()
+		defer func() {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+		}()
 
 		if resp.StatusCode != 200 {
 			return nil, fmt.Errorf("TMDB alt titles error: %d", resp.StatusCode)
@@ -332,7 +342,10 @@ func getTMDBTranslatedTitle(imdbID, preferredLanguage string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer resp2.Body.Close()
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp2.Body)
+		resp2.Body.Close()
+	}()
 
 	if resp2.StatusCode != 200 {
 		return "", fmt.Errorf("TMDB details error: %d", resp2.StatusCode)
@@ -365,7 +378,10 @@ func getTMDBTranslatedTitle(imdbID, preferredLanguage string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer resp3.Body.Close()
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp3.Body)
+		resp3.Body.Close()
+	}()
 
 	var transData struct {
 		Translations []struct {
@@ -419,7 +435,10 @@ func imdbMetaProvider(id, preferredLanguage string) (MetaProviderResponse, error
 	if err != nil {
 		return MetaProviderResponse{}, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}()
 
 	var data struct {
 		D []struct {
@@ -534,7 +553,10 @@ func cinemetaMetaProvider(id, contentType, preferredLanguage string) (MetaProvid
 	if err != nil {
 		return MetaProviderResponse{}, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}()
 
 	var data struct {
 		Meta struct {
