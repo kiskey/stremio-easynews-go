@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -23,34 +24,84 @@ var (
 const metaFetchTimeout = 5000 * time.Millisecond
 
 // ---------------------------------------------------------------------------
-// TMDB Title Translation Logic
+// Thread-Safe TMDB Query Cache Layers (Avoid duplicate network calls)
 // ---------------------------------------------------------------------------
 
-func getTMDBTranslatedTitle(imdbID, preferredLanguage string) (string, error) {
-	if !useTMDB || preferredLanguage == "" {
-		return "", nil
-	}
+type tmdbIDMapping struct {
+	id      int
+	isMovie bool
+}
 
-	tmdbLang := i18n.ConvertToTMDBLanguageCode(preferredLanguage)
+var (
+	imdbToTMDBIDCache   = make(map[string]tmdbIDMapping)
+	imdbToTMDBIDCacheMu sync.RWMutex
+
+	tmdbAltTitlesCache   = make(map[string][]string)
+	tmdbAltTitlesCacheMu sync.RWMutex
+)
+
+// ---------------------------------------------------------------------------
+// Resilient API Network Fetcher with Exponential Backoff
+// ---------------------------------------------------------------------------
+
+func fetchWithRetry(ctx context.Context, client *http.Client, req *http.Request) (*http.Response, error) {
+	var resp *http.Response
+	var err error
+	maxRetries := 3
+	backoff := 500 * time.Millisecond
+
+	for i := 0; i < maxRetries; i++ {
+		reqWithCtx := req.WithContext(ctx)
+		resp, err = client.Do(reqWithCtx)
+		if err == nil {
+			// If server successfully replied (including standard 4xx client errors), break and return
+			if resp.StatusCode < 500 {
+				return resp, nil
+			}
+			resp.Body.Close()
+			err = fmt.Errorf("TMDB downstream server error: %d", resp.StatusCode)
+		}
+
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(backoff):
+			backoff *= 2 // Exponential backoff scaling
+		}
+	}
+	return nil, err
+}
+
+// ---------------------------------------------------------------------------
+// ID Resolution Helper (IMDb ID -> TMDB ID)
+// ---------------------------------------------------------------------------
+
+func resolveTMDBID(imdbID string) (int, bool, error) {
+	imdbToTMDBIDCacheMu.RLock()
+	mapping, ok := imdbToTMDBIDCache[imdbID]
+	imdbToTMDBIDCacheMu.RUnlock()
+	if ok {
+		return mapping.id, mapping.isMovie, nil
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), metaFetchTimeout)
 	defer cancel()
 
-	// Step 1: Find TMDB ID from IMDb ID
 	findURL := fmt.Sprintf("https://api.themoviedb.org/3/find/%s?api_key=%s&external_source=imdb_id", imdbID, tmdbAPIKey)
 	req, _ := http.NewRequestWithContext(ctx, "GET", findURL, nil)
-	resp, err := http.DefaultClient.Do(req)
+	
+	resp, err := fetchWithRetry(ctx, http.DefaultClient, req)
 	if err != nil {
-		return "", err
+		return 0, false, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == 401 {
 		useTMDB = false
-		return "", fmt.Errorf("TMDB API key invalid")
+		return 0, false, fmt.Errorf("TMDB API key invalid")
 	}
 	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("TMDB find error: %d", resp.StatusCode)
+		return 0, false, fmt.Errorf("TMDB find error: %d", resp.StatusCode)
 	}
 
 	var findData struct {
@@ -62,13 +113,13 @@ func getTMDBTranslatedTitle(imdbID, preferredLanguage string) (string, error) {
 		} `json:"tv_results"`
 	}
 	if err := sonic.ConfigStd.NewDecoder(resp.Body).Decode(&findData); err != nil {
-		return "", err
+		return 0, false, err
 	}
 
 	isMovie := len(findData.MovieResults) > 0
 	isTV := len(findData.TVResults) > 0
 	if !isMovie && !isTV {
-		return "", nil
+		return 0, false, nil
 	}
 
 	var tmdbID int
@@ -78,7 +129,125 @@ func getTMDBTranslatedTitle(imdbID, preferredLanguage string) (string, error) {
 		tmdbID = findData.TVResults[0].ID
 	}
 
-	// Step 2: Get details in preferred language
+	imdbToTMDBIDCacheMu.Lock()
+	imdbToTMDBIDCache[imdbID] = tmdbIDMapping{id: tmdbID, isMovie: isMovie}
+	imdbToTMDBIDCacheMu.Unlock()
+
+	return tmdbID, isMovie, nil
+}
+
+// ---------------------------------------------------------------------------
+// Dynamic Alternate Titles Resolution
+// ---------------------------------------------------------------------------
+
+func getTMDBAlternativeTitles(imdbID string) ([]string, error) {
+	if !useTMDB {
+		return nil, nil
+	}
+
+	tmdbAltTitlesCacheMu.RLock()
+	cached, ok := tmdbAltTitlesCache[imdbID]
+	tmdbAltTitlesCacheMu.RUnlock()
+	if ok {
+		return cached, nil
+	}
+
+	tmdbID, isMovie, err := resolveTMDBID(imdbID)
+	if err != nil || tmdbID == 0 {
+		return nil, err
+	}
+
+	var u string
+	if isMovie {
+		u = fmt.Sprintf("https://api.themoviedb.org/3/movie/%d/alternative_titles?api_key=%s", tmdbID, tmdbAPIKey)
+	} else {
+		u = fmt.Sprintf("https://api.themoviedb.org/3/tv/%d/alternative_titles?api_key=%s", tmdbID, tmdbAPIKey)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), metaFetchTimeout)
+	defer cancel()
+
+	req, _ := http.NewRequestWithContext(ctx, "GET", u, nil)
+	
+	resp, err := fetchWithRetry(ctx, http.DefaultClient, req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("TMDB alt titles error: %d", resp.StatusCode)
+	}
+
+	var data struct {
+		ID      int `json:"id"`
+		Titles  []struct {
+			ISO3166_1 string `json:"iso_3166_1"`
+			Title     string `json:"title"`
+			Type      string `json:"type"`
+		} `json:"titles"`
+		Results []struct {
+			ISO3166_1 string `json:"iso_3166_1"`
+			Title     string `json:"title"`
+			Type      string `json:"type"`
+		} `json:"results"`
+	}
+
+	if err := sonic.ConfigStd.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, err
+	}
+
+	var rawList []string
+	if len(data.Titles) > 0 {
+		for _, item := range data.Titles {
+			rawList = append(rawList, item.Title)
+		}
+	} else if len(data.Results) > 0 {
+		for _, item := range data.Results {
+			rawList = append(rawList, item.Title)
+		}
+	}
+
+	// Filter down list using IsLatinString to reject non-Latin character sets
+	var cleanList []string
+	seen := make(map[string]bool)
+	for _, t := range rawList {
+		t = strings.TrimSpace(t)
+		if t == "" || len(t) <= 1 {
+			continue
+		}
+		if seen[t] {
+			continue
+		}
+		if IsLatinString(t) {
+			seen[t] = true
+			cleanList = append(cleanList, t)
+		}
+	}
+
+	tmdbAltTitlesCacheMu.Lock()
+	tmdbAltTitlesCache[imdbID] = cleanList
+	tmdbAltTitlesCacheMu.Unlock()
+
+	return cleanList, nil
+}
+
+// ---------------------------------------------------------------------------
+// TMDB Title Translation Logic
+// ---------------------------------------------------------------------------
+
+func getTMDBTranslatedTitle(imdbID, preferredLanguage string) (string, error) {
+	if !useTMDB || preferredLanguage == "" {
+		return "", nil
+	}
+
+	tmdbLang := i18n.ConvertToTMDBLanguageCode(preferredLanguage)
+
+	tmdbID, isMovie, err := resolveTMDBID(imdbID)
+	if err != nil || tmdbID == 0 {
+		return "", err
+	}
+
 	var detailsURL string
 	if isMovie {
 		detailsURL = fmt.Sprintf("https://api.themoviedb.org/3/movie/%d?api_key=%s&language=%s", tmdbID, tmdbAPIKey, tmdbLang)
@@ -86,8 +255,11 @@ func getTMDBTranslatedTitle(imdbID, preferredLanguage string) (string, error) {
 		detailsURL = fmt.Sprintf("https://api.themoviedb.org/3/tv/%d?api_key=%s&language=%s", tmdbID, tmdbAPIKey, tmdbLang)
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), metaFetchTimeout)
+	defer cancel()
+
 	req2, _ := http.NewRequestWithContext(ctx, "GET", detailsURL, nil)
-	resp2, err := http.DefaultClient.Do(req2)
+	resp2, err := fetchWithRetry(ctx, http.DefaultClient, req2)
 	if err != nil {
 		return "", err
 	}
@@ -112,7 +284,6 @@ func getTMDBTranslatedTitle(imdbID, preferredLanguage string) (string, error) {
 		return details.Name, nil
 	}
 
-	// Step 3: Try translations endpoint as fallback
 	var transURL string
 	if isMovie {
 		transURL = fmt.Sprintf("https://api.themoviedb.org/3/movie/%d/translations?api_key=%s", tmdbID, tmdbAPIKey)
@@ -121,7 +292,7 @@ func getTMDBTranslatedTitle(imdbID, preferredLanguage string) (string, error) {
 	}
 
 	req3, _ := http.NewRequestWithContext(ctx, "GET", transURL, nil)
-	resp3, err := http.DefaultClient.Do(req3)
+	resp3, err := fetchWithRetry(ctx, http.DefaultClient, req3)
 	if err != nil {
 		return "", err
 	}
@@ -174,7 +345,8 @@ func imdbMetaProvider(id, preferredLanguage string) (MetaProviderResponse, error
 
 	url := fmt.Sprintf("https://v2.sg.media-imdb.com/suggestion/t/%s.json", tt)
 	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
-	resp, err := http.DefaultClient.Do(req)
+	
+	resp, err := fetchWithRetry(ctx, http.DefaultClient, req)
 	if err != nil {
 		return MetaProviderResponse{}, err
 	}
@@ -209,14 +381,33 @@ func imdbMetaProvider(id, preferredLanguage string) (MetaProviderResponse, error
 	}
 
 	originalName := item.L
-	alternatives := GetAlternativeTitles(originalName, nil)
+	alternatives := GetAlternativeTitles(originalName)
+
+	// Fetch dynamic alternative titles from TMDB API and merge
+	if useTMDB {
+		altTitles, err := getTMDBAlternativeTitles(tt)
+		if err == nil && len(altTitles) > 0 {
+			for _, alt := range altTitles {
+				isDup := false
+				for _, existing := range alternatives {
+					if strings.EqualFold(existing, alt) {
+						isDup = true
+						break
+					}
+				}
+				if !isDup {
+					alternatives = append(alternatives, alt)
+				}
+			}
+		}
+	}
 
 	if preferredLanguage != "" {
 		translated, err := getTMDBTranslatedTitle(tt, preferredLanguage)
 		if err == nil && translated != "" {
 			hasIt := false
 			for _, a := range alternatives {
-				if a == translated {
+				if strings.EqualFold(a, translated) {
 					hasIt = true
 					break
 				}
@@ -228,7 +419,7 @@ func imdbMetaProvider(id, preferredLanguage string) (MetaProviderResponse, error
 			if sanitized != translated {
 				hasSanitized := false
 				for _, a := range alternatives {
-					if a == sanitized {
+					if strings.EqualFold(a, sanitized) {
 						hasSanitized = true
 						break
 					}
@@ -270,7 +461,8 @@ func cinemetaMetaProvider(id, contentType, preferredLanguage string) (MetaProvid
 
 	url := fmt.Sprintf("https://v3-cinemeta.strem.io/meta/%s/%s.json", contentType, tt)
 	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
-	resp, err := http.DefaultClient.Do(req)
+	
+	resp, err := fetchWithRetry(ctx, http.DefaultClient, req)
 	if err != nil {
 		return MetaProviderResponse{}, err
 	}
@@ -297,14 +489,33 @@ func cinemetaMetaProvider(id, contentType, preferredLanguage string) (MetaProvid
 		yearVal = *year
 	}
 
-	alternatives := GetAlternativeTitles(name, nil)
+	alternatives := GetAlternativeTitles(name)
+
+	// Fetch dynamic alternative titles from TMDB API and merge
+	if useTMDB {
+		altTitles, err := getTMDBAlternativeTitles(tt)
+		if err == nil && len(altTitles) > 0 {
+			for _, alt := range altTitles {
+				isDup := false
+				for _, existing := range alternatives {
+					if strings.EqualFold(existing, alt) {
+						isDup = true
+						break
+					}
+				}
+				if !isDup {
+					alternatives = append(alternatives, alt)
+				}
+			}
+		}
+	}
 
 	if preferredLanguage != "" {
 		translated, err := getTMDBTranslatedTitle(tt, preferredLanguage)
 		if err == nil && translated != "" {
 			hasIt := false
 			for _, a := range alternatives {
-				if a == translated {
+				if strings.EqualFold(a, translated) {
 					hasIt = true
 					break
 				}
