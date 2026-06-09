@@ -16,6 +16,16 @@ import (
 )
 
 // ---------------------------------------------------------------------------
+// Shared Network Connection Pooling (CRITICAL FOR CONNECTION REUSE)
+// ---------------------------------------------------------------------------
+
+var sharedTransport = &http.Transport{
+	MaxIdleConns:        100,
+	MaxIdleConnsPerHost: 100,
+	IdleConnTimeout:     90 * time.Second,
+}
+
+// ---------------------------------------------------------------------------
 // Process-level shared cache (Shared across all EasynewsAPI client instances)
 // ---------------------------------------------------------------------------
 
@@ -54,12 +64,8 @@ func NewEasynewsAPI(username, password string) (*EasynewsAPI, error) {
 		password: password,
 		credKey:  credFingerprint(username, password),
 		client: &http.Client{
-			Timeout: 20 * time.Second,
-			Transport: &http.Transport{
-				MaxIdleConns:        100,
-				MaxIdleConnsPerHost: 100,
-				IdleConnTimeout:     90 * time.Second,
-			},
+			Timeout:   20 * time.Second,
+			Transport: sharedTransport, // Reuses shared connection pool
 		},
 	}, nil
 }
@@ -88,7 +94,6 @@ func (api *EasynewsAPI) cacheKey(opts SearchOptions) string {
 		maxResults = shared.ParseIntEnv("MAX_RESULTS_PER_PAGE", 250)
 	}
 
-	// High-performance direct string construction to bypass reflection-based serialization
 	return api.credKey + "|q=" + opts.Query +
 		"|p=" + strconv.Itoa(opts.PageNr) +
 		"|m=" + strconv.Itoa(maxResults) +
