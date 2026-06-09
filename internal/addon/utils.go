@@ -1,7 +1,6 @@
 package addon
 
 import (
-	_ "embed"
 	"encoding/base64"
 	"fmt"
 	"net/url"
@@ -13,13 +12,12 @@ import (
 	"time"
 
 	tnp "github.com/ProfChaos/torrent-name-parser"
-	"github.com/bytedance/sonic"
 	"github.com/kiskey/stremio-easynews-go/internal/api"
 	"github.com/kiskey/stremio-easynews-go/internal/shared"
 )
 
 // ---------------------------------------------------------------------------
-// Pre-Compiled Regular Expressions (Avoid compilation on hot path)
+// Pre-Compiled Regular Expressions (Avoid compile allocations on hot paths)
 // ---------------------------------------------------------------------------
 
 var (
@@ -51,27 +49,37 @@ var (
 	}
 )
 
-// ---------------------------------------------------------------------------
-// Custom Titles Alias Mapping
-// ---------------------------------------------------------------------------
-
-//go:embed custom-titles.json
-var customTitlesJSON []byte
-
-var customTitles map[string][]string
-
-func init() {
-	_ = sonic.Unmarshal(customTitlesJSON, &customTitles)
-	if customTitles == nil {
-		customTitles = map[string][]string{}
+// IsLatinString checks if a string contains exclusively ASCII printable characters
+// or standard European accented Latin-1 Supplement characters (German, Spanish, French, etc.).
+// Rejects Japanese, Korean, Chinese, Arabic, and Cyrillic character sets.
+func IsLatinString(s string) bool {
+	for _, r := range s {
+		// Allow standard ASCII printable characters (space through tilde)
+		if r >= 32 && r <= 126 {
+			continue
+		}
+		// Allow accented Latin characters (Latin-1 Supplement: U+0080 to U+00FF)
+		if r >= 0x0080 && r <= 0x00FF {
+			continue
+		}
+		// Any code points above U+00FF are rejected
+		if r > 0x00FF {
+			return false
+		}
 	}
+	return true
+}
+
+// GetAlternativeTitles serves as a clean, backward-compatible stub returning the main title.
+// Advanced alternate titles are now fetched dynamically via the TMDB API inside the meta module.
+func GetAlternativeTitles(title string) []string {
+	return []string{title}
 }
 
 // ---------------------------------------------------------------------------
 // Bad Video Logic
 // ---------------------------------------------------------------------------
 
-// IsBadVideo filters out sample clips, trailers, passwords, viruses, and non-video payloads.
 func IsBadVideo(file api.FileData) bool {
 	duration := file.GetDuration()
 
@@ -91,7 +99,7 @@ func IsBadVideo(file api.FileData) bool {
 		return true
 	}
 	if file.RawSize > 0 && file.RawSize < 20*1024*1024 {
-		return true // < 20MB is highly likely a sample
+		return true // < 20MB
 	}
 	return false
 }
@@ -100,10 +108,8 @@ func IsBadVideo(file api.FileData) bool {
 // Title Sanitization
 // ---------------------------------------------------------------------------
 
-// SanitizeTitle normalizes titles for matching across diverse release schemas.
 func SanitizeTitle(title string) string {
 	result := title
-	// Replace German characters
 	result = strings.ReplaceAll(result, "ä", "ae")
 	result = strings.ReplaceAll(result, "ö", "oe")
 	result = strings.ReplaceAll(result, "ü", "ue")
@@ -111,9 +117,7 @@ func SanitizeTitle(title string) string {
 	result = strings.ReplaceAll(result, "Ä", "Ae")
 	result = strings.ReplaceAll(result, "Ö", "Oe")
 	result = strings.ReplaceAll(result, "Ü", "Ue")
-	// Replace ampersand
 	result = strings.ReplaceAll(result, "&", "and")
-	// Clean separators, brackets, non-alphanumerics
 	result = separatorsRe.ReplaceAllString(result, " ")
 	result = bracketsRe.ReplaceAllString(result, " ")
 	result = nonAlphanumericRe.ReplaceAllString(result, "")
@@ -127,7 +131,6 @@ func SanitizeTitle(title string) string {
 // Title Matching Execution
 // ---------------------------------------------------------------------------
 
-// MatchesTitle evaluates if a video post title corresponds to the target query.
 func MatchesTitle(title, query string, strict bool) bool {
 	sanitizedQuery := SanitizeTitle(query)
 	sanitizedTitle := SanitizeTitle(title)
@@ -217,7 +220,6 @@ func MatchesTitle(title, query string, strict bool) bool {
 		return false
 	}
 
-	// non-strict mode
 	if seasonEpisodeRe.MatchString(sanitizedQuery) {
 		seMatch := seasonEpisodeRe.FindString(sanitizedQuery)
 		if seMatch != "" {
@@ -351,45 +353,6 @@ func GetQuality(title string, fallbackResolution string) string {
 		return fallbackResolution
 	}
 	return ""
-}
-
-// ---------------------------------------------------------------------------
-// Alternative Title Lookup
-// ---------------------------------------------------------------------------
-
-func GetAlternativeTitles(title string, customTitlesInput map[string][]string) []string {
-	alternatives := []string{title}
-
-	if customTitlesInput == nil {
-		customTitlesInput = customTitles
-	}
-
-	if vals, ok := customTitlesInput[title]; ok {
-		alternatives = append(alternatives, vals...)
-	}
-
-	for key, vals := range customTitlesInput {
-		if key == title {
-			continue
-		}
-		if strings.Contains(strings.ToLower(title), strings.ToLower(key)) ||
-			strings.Contains(strings.ToLower(key), strings.ToLower(title)) {
-			for _, v := range vals {
-				found := false
-				for _, existing := range alternatives {
-					if existing == v {
-						found = true
-						break
-					}
-				}
-				if !found {
-					alternatives = append(alternatives, v)
-				}
-			}
-		}
-	}
-
-	return alternatives
 }
 
 // ---------------------------------------------------------------------------
