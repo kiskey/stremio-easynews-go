@@ -1,0 +1,58 @@
+name: Build Stremio Easynews Binary
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Compile Statically Linked Alpine Binary
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go Runtime
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true # Automatically cache Go module downloads and build cache
+
+      - name: Fetch Go Module Dependencies
+        run: go mod download
+
+      - name: Extract Release Version
+        id: vars
+        run: |
+          # Use Git Tag as Version, fall back to short Git Commit SHA if not a tag push
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            echo "VERSION=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "VERSION=${{ github.sha }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Compile Go Executable (Linux AMD64)
+        env:
+          CGO_ENABLED: 0
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          go build -trimpath -ldflags="-s -w -X github.com/kiskey/stremio-easynews-go/internal/shared.Version=${{ steps.vars.outputs.VERSION }}" -o bin/stremio-easynews-linux-amd64 cmd/addon/main.go
+
+      - name: Upload Binary Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: stremio-easynews-linux-amd64
+          path: bin/stremio-easynews-linux-amd64
+          if-no-files-found: error
+          retention-days: 7
