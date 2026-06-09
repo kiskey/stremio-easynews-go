@@ -5,8 +5,9 @@ import (
 	"strconv"
 )
 
-// ParseIntEnv parses an environment variable as an integer.
-// If the variable is empty or not a valid integer, it returns the fallback.
+// ParseIntEnv safely parses an environment variable as an integer.
+// It is guaranteed never to panic. If the variable is missing or malformed,
+// it gracefully defaults to the provided fallback value.
 func ParseIntEnv(key string, fallback int) int {
 	val := os.Getenv(key)
 	if val == "" {
@@ -19,10 +20,10 @@ func ParseIntEnv(key string, fallback int) int {
 	return n
 }
 
-// ParseBoolEnv parses a boolean environment variable.
-// Returns true if the value matches "true", "on", or "1".
-// Returns false if the value matches "false", "off", or "0".
-// Otherwise, returns the fallback value.
+// ParseBoolEnv safely parses a boolean environment variable.
+// It is guaranteed never to panic. It returns true if the value matches "true", "on", or "1".
+// It returns false if the value matches "false", "off", or "0".
+// Otherwise, it returns the fallback value.
 func ParseBoolEnv(key string, fallback bool) bool {
 	val := os.Getenv(key)
 	if val == "" {
@@ -38,8 +39,9 @@ func ParseBoolEnv(key string, fallback bool) bool {
 	}
 }
 
-// ParseFloatEnv parses a float environment variable with fallback.
-// If the variable is empty or not a valid float64, it returns the fallback.
+// ParseFloatEnv safely parses a float environment variable with fallback.
+// It is guaranteed never to panic. If the variable is empty or not a valid float64, 
+// it returns the fallback.
 func ParseFloatEnv(key string, fallback float64) float64 {
 	val := os.Getenv(key)
 	if val == "" {
