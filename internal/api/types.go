@@ -77,7 +77,7 @@ type FileData struct {
 }
 
 // ---------------------------------------------------------------------------
-// Accessors (Optimized with value receivers to avoid heap allocation)
+// Accessors (Value receivers for mathematical guarantee against nil-dereference)
 // ---------------------------------------------------------------------------
 
 func (f FileData) GetHash() string      { return f.Zero }
