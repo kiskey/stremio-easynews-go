@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="{{.UILanguage}}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{.Translations.ConfigPage.Title}} - {{.Manifest.Name}}</title>
+    <link rel="icon" href="{{.Manifest.Logo}}" type="image/png">
+    <style>
+        :root {
+            --bg-color: #0f0c1b;
+            --container-bg: #16122c;
+            --text-color: #e2e8f0;
+            --text-muted: #94a3b8;
+            --primary: #8b5cf6;
+            --primary-hover: #7c3aed;
+            --accent: #3b82f6;
+            --border-color: #2e2652;
+            --input-bg: #090714;
+            --error-color: #ef4444;
+            --success-color: #10b981;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            line-height: 1.5;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            padding: 2rem 1rem;
+            background-image: radial-gradient(circle at top right, rgba(139, 92, 246, 0.08), transparent 40%),
+                              radial-gradient(circle at bottom left, rgba(59, 130, 246, 0.05), transparent 40%);
+        }
+
+        .container {
+            background-color: var(--container-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 1rem;
+            width: 100%;
+            max-width: 600px;
+            padding: 2.5rem;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.3), 0 10px 10px -5px rgba(0, 0, 0, 0.3);
+            animation: fadeIn 0.4s ease-out;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .header {
+            display: flex;
+            align-items: center;
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 1.5rem;
+        }
+
+        .logo {
+            width: 64px;
+            height: 64px;
+            border-radius: 1rem;
+            object-fit: cover;
+            border: 2px solid var(--primary);
+        }
+
+        .header-text h1 {
+            font-size: 1.75rem;
+            font-weight: 800;
+            letter-spacing: -0.025em;
+            background: linear-gradient(to right, #a78bfa, #60a5fa);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .version {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-top: 0.25rem;
+        }
+
+        .description {
+            color: var(--text-muted);
+            font-size: 0.925rem;
+            margin-bottom: 2rem;
+            line-height: 1.6;
+        }
+
+        .description a {
+            color: #a78bfa;
+            text-decoration: none;
+            transition: color 0.2s;
+        }
+
+        .description a:hover {
+            color: #c084fc;
+            text-decoration: underline;
+        }
+
+        .form-group {
+            margin-bottom: 1.5rem;
+        }
+
+        .form-group label {
+            display: block;
+            font-size: 0.875rem;
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+            color: var(--text-color);
+        }
+
+        .input-control {
+            width: 100%;
+            padding: 0.75rem 1rem;
+            background-color: var(--input-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 0.5rem;
+            color: var(--text-color);
+            font-size: 0.95rem;
+            outline: none;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+
+        .input-control:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.2);
+        }
+
+        .checkbox-container {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.75rem;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .checkbox-container input {
+            margin-top: 0.25rem;
+            accent-color: var(--primary);
+            width: 1.125rem;
+            height: 1.125rem;
+            cursor: pointer;
+        }
+
+        .checkbox-text {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .checkbox-text label {
+            margin-bottom: 0.125rem;
+            cursor: pointer;
+        }
+
+        .hint {
+            display: block;
+            font-size: 0.775rem;
+            color: var(--text-muted);
+            margin-top: 0.375rem;
+            line-height: 1.4;
+        }
+
+        .actions {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            margin-top: 2.5rem;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0.875rem 1.5rem;
+            font-size: 0.95rem;
+            font-weight: 700;
+            border-radius: 0.5rem;
+            cursor: pointer;
+            transition: background-color 0.2s, transform 0.1s;
+            border: none;
+            text-decoration: none;
+            width: 100%;
+        }
+
+        .btn-primary {
+            background-color: var(--primary);
+            color: #ffffff;
+        }
+
+        .btn-primary:hover {
+            background-color: var(--primary-hover);
+        }
+
+        .btn-primary:active {
+            transform: scale(0.98);
+        }
+
+        .btn-secondary {
+            background-color: rgba(255, 255, 255, 0.05);
+            color: var(--text-color);
+            border: 1px solid var(--border-color);
+        }
+
+        .btn-secondary:hover {
+            background-color: rgba(255, 255, 255, 0.08);
+        }
+
+        .btn-secondary:active {
+            transform: scale(0.98);
+        }
+
+        .toast {
+            position: fixed;
+            bottom: 2rem;
+            left: 50%;
+            transform: translateX(-50%) translateY(100px);
+            background-color: var(--success-color);
+            color: #ffffff;
+            padding: 0.75rem 1.5rem;
+            border-radius: 0.5rem;
+            font-weight: 600;
+            font-size: 0.9rem;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3);
+            transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.3s;
+            opacity: 0;
+            z-index: 100;
+        }
+
+        .toast.show {
+            transform: translateX(-50%) translateY(0);
+            opacity: 1;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <img class="logo" src="{{.Manifest.Logo}}" alt="{{.Manifest.Name}} Logo">
+            <div class="header-text">
+                <h1>{{.Manifest.Name}}</h1>
+                <div class="version">{{.Translations.ConfigPage.Version}} {{.Manifest.Version}}</div>
+            </div>
+        </div>
+
+        <div class="description">
+            {{.Translations.ConfigPage.Description}}
+        </div>
+
+        <form id="configForm" onsubmit="return false;">
+            {{range .TranslatedFields}}
+                <div class="form-group">
+                    {{if eq .Type "checkbox"}}
+                        <div class="checkbox-container">
+                            <input type="checkbox" id="{{.Key}}" {{if eq .Default "true"}}checked{{end}}>
+                            <div class="checkbox-text">
+                                <label for="{{.Key}}">{{.Title}}</label>
+                                {{if .Hint}}<span class="hint">{{.Hint}}</span>{{end}}
+                            </div>
+                        </div>
+                    {{else}}
+                        <label for="{{.Key}}">{{.Title}}</label>
+                        {{if eq .Type "select"}}
+                            <select id="{{.Key}}" class="input-control" {{if eq .Key "uiLanguage"}}onchange="changeLanguage(this.value)"{{end}}>
+                                {{$defaultVal := .Default}}
+                                {{range $k, $v := .Options}}
+                                    <option value="{{$k}}" {{if eq $k $defaultVal}}selected{{end}}>{{$v}}</option>
+                                {{end}}
+                            </select>
+                        {{else if eq .Type "password"}}
+                            <input type="password" id="{{.Key}}" value="{{.Default}}" class="input-control" autocomplete="current-password">
+                        {{else if eq .Type "number"}}
+                            <input type="number" id="{{.Key}}" value="{{.Default}}" min="0" class="input-control">
+                        {{else}}
+                            <input type="text" id="{{.Key}}" value="{{.Default}}" class="input-control" autocomplete="username">
+                        {{if .Hint}}<span class="hint">{{.Hint}}</span>{{end}}
+                        {{end}}
+                    {{end}}
+                </div>
+            {{end}}
+
+            <div class="actions">
+                <button type="button" class="btn btn-primary" onclick="installAddon()">{{.Translations.ConfigPage.AddToStremio}}</button>
+                <button type="button" class="btn btn-secondary" onclick="copyConfiguration()">{{.Translations.ConfigPage.CopyConfig}}</button>
+            </div>
+        </form>
+    </div>
+
+    <div id="toast" class="toast">{{.Translations.ConfigPage.ConfigCopied}}</div>
+
+    <script>
+        function changeLanguage(lang) {
+            const url = new URL(window.location.href);
+            url.searchParams.set('lang', lang);
+            window.location.href = url.toString();
+        }
+
+        function getConfiguration() {
+            const config = {};
+            const keys = [
+                'uiLanguage', 'username', 'password', 'strictTitleMatching', 
+                'preferredLanguage', 'sortingPreference', 'showQualities', 
+                'maxResultsPerQuality', 'maxFileSize'
+            ];
+
+            keys.forEach(key => {
+                const element = document.getElementById(key);
+                if (!element) return;
+                
+                if (element.type === 'checkbox') {
+                    config[key] = element.checked ? 'true' : 'false';
+                } else {
+                    config[key] = element.value;
+                }
+            });
+
+            const params = new URLSearchParams();
+            Object.entries(config).forEach(([k, v]) => {
+                if (v !== '') {
+                    params.append(k, v);
+                }
+            });
+
+            return params.toString();
+        }
+
+        function buildManifestURL() {
+            const configString = getConfiguration();
+            const secureHost = window.location.protocol + '//' + window.location.host;
+            return secureHost + '/' + configString + '/manifest.json';
+        }
+
+        function installAddon() {
+            const manifestURL = buildManifestURL();
+            const stremioURL = manifestURL.replace(/^http/, 'stremio');
+            window.location.href = stremioURL;
+        }
+
+        function copyConfiguration() {
+            const manifestURL = buildManifestURL();
+            navigator.clipboard.writeText(manifestURL).then(() => {
+                const toast = document.getElementById('toast');
+                toast.classList.add('show');
+                setTimeout(() => {
+                    toast.classList.remove('show');
+                }, 3000);
+            }).catch(err => {
+                console.error('Could not copy text: ', err);
+            });
+        }
+    </script>
+</body>
+</html>
