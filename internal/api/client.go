@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"net/http"
 	"net/url"
 	"sort"
@@ -16,7 +17,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Shared Network Connection Pooling (CRITICAL FOR CONNECTION REUSE)
+// Shared Network Connection Pooling (Reused across dynamic API instances)
 // ---------------------------------------------------------------------------
 
 var sharedTransport = &http.Transport{
@@ -26,11 +27,11 @@ var sharedTransport = &http.Transport{
 }
 
 // ---------------------------------------------------------------------------
-// Process-level shared cache (Shared across all EasynewsAPI client instances)
+// Process-level shared cache (Optimized with pointers to bypass GC heap escapes)
 // ---------------------------------------------------------------------------
 
 var (
-	sharedCache     = make(map[string]cacheEntry)
+	sharedCache     = make(map[string]*cacheEntry)
 	sharedCacheMu   sync.RWMutex
 	maxCacheEntries = shared.ParseIntEnv("MAX_CACHE_ENTRIES", 1000)
 	cacheTTL        = time.Duration(shared.ParseIntEnv("CACHE_TTL", 24)) * time.Hour
@@ -65,7 +66,7 @@ func NewEasynewsAPI(username, password string) (*EasynewsAPI, error) {
 		credKey:  credFingerprint(username, password),
 		client: &http.Client{
 			Timeout:   20 * time.Second,
-			Transport: sharedTransport, // Reuses shared connection pool
+			Transport: sharedTransport, // Reuses global TCP pool
 		},
 	}, nil
 }
@@ -80,7 +81,7 @@ func credFingerprint(username, password string) string {
 // ClearCache resets the shared in-memory search cache.
 func ClearCache() {
 	sharedCacheMu.Lock()
-	sharedCache = make(map[string]cacheEntry)
+	sharedCache = make(map[string]*cacheEntry)
 	sharedCacheMu.Unlock()
 }
 
@@ -123,7 +124,7 @@ func (api *EasynewsAPI) setCache(key string, data EasynewsSearchResponse) {
 	sharedCacheMu.Lock()
 	defer sharedCacheMu.Unlock()
 
-	sharedCache[key] = cacheEntry{
+	sharedCache[key] = &cacheEntry{
 		data:      data,
 		timestamp: time.Now().UnixNano(),
 	}
@@ -166,7 +167,6 @@ func (api *EasynewsAPI) Search(opts SearchOptions) (EasynewsSearchResponse, erro
 		opts.MaxResults = shared.ParseIntEnv("MAX_RESULTS_PER_PAGE", 250)
 	}
 
-	// Apply default Solr sorts if none provided
 	if opts.Sort1 == "" {
 		opts.Sort1 = "dsize"
 		opts.Sort1Direction = "-"
@@ -223,7 +223,11 @@ func (api *EasynewsAPI) Search(opts SearchOptions) (EasynewsSearchResponse, erro
 		}
 		return EasynewsSearchResponse{}, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		// Drain body to make sure connection is available for reuse in transport pool
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}()
 
 	if resp.StatusCode == http.StatusUnauthorized {
 		return EasynewsSearchResponse{}, fmt.Errorf("authentication failed: invalid username or password")
