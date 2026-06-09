@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -70,13 +71,14 @@ func (z *ZerologLogger) Silly(msg string, args ...interface{}) {
 func (z *ZerologLogger) GetLevel() string { return z.level }
 
 // ---------------------------------------------------------------------------
-// SummaryLogger: deduplicates noisy debug patterns
+// SummaryLogger: deduplicates noisy debug patterns (Audited and thread-safe)
 // ---------------------------------------------------------------------------
 
 type summaryCounter struct {
-	count     int
+	count     int64 // Read and written atomically
 	firstMsg  string
 	firstArgs []interface{}
+	mu        sync.Mutex // Protects firstMsg and firstArgs from concurrent access
 }
 
 type SummaryLogger struct {
@@ -85,6 +87,7 @@ type SummaryLogger struct {
 	patterns   []*regexp.Regexp
 	ticker     *time.Ticker
 	stopCh     chan struct{}
+	stopOnce   sync.Once // Prevents channel panics on duplicate Stop() calls
 	flushDelay time.Duration
 }
 
@@ -107,7 +110,6 @@ var summaryPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`Reached global limit of (\d+) streams`),
 }
 
-// Pre-compiled fallback expressions for the getPattern method to minimize allocations.
 var (
 	genericQuoteRe = regexp.MustCompile(`".+?"`)
 	genericDigitRe = regexp.MustCompile(`\d+`)
@@ -141,10 +143,15 @@ func (sl *SummaryLogger) flusher() {
 func (sl *SummaryLogger) flush() {
 	sl.counters.Range(func(key, value interface{}) bool {
 		sc := value.(*summaryCounter)
-		if sc.count > 1 {
-			sl.base.Debug("[SUMMARY] %s: %d similar logs", key.(string), sc.count)
-		} else if sc.count == 1 {
-			sl.base.Debug(sc.firstMsg, sc.firstArgs...)
+		count := atomic.LoadInt64(&sc.count)
+		if count > 1 {
+			sl.base.Debug("[SUMMARY] %s: %d similar logs", key.(string), count)
+		} else if count == 1 {
+			sc.mu.Lock()
+			msg := sc.firstMsg
+			args := sc.firstArgs
+			sc.mu.Unlock()
+			sl.base.Debug(msg, args...)
 		}
 		return true
 	})
@@ -179,7 +186,6 @@ func (sl *SummaryLogger) getPattern(msg string) string {
 		}
 	}
 
-	// Highly optimized generic fallback with pre-compiled regex
 	generic := genericQuoteRe.ReplaceAllString(msg, `"..."`)
 	generic = genericDigitRe.ReplaceAllString(generic, "#")
 	if len(generic) > 60 {
@@ -198,10 +204,13 @@ func (sl *SummaryLogger) Debug(msg string, args ...interface{}) {
 		pattern := sl.getPattern(msg)
 		actual, _ := sl.counters.LoadOrStore(pattern, &summaryCounter{})
 		sc := actual.(*summaryCounter)
-		sc.count++
-		if sc.count == 1 {
+		
+		newCount := atomic.AddInt64(&sc.count, 1)
+		if newCount == 1 {
+			sc.mu.Lock()
 			sc.firstMsg = msg
 			sc.firstArgs = args
+			sc.mu.Unlock()
 		}
 	} else {
 		sl.base.Debug(msg, args...)
@@ -211,11 +220,13 @@ func (sl *SummaryLogger) Debug(msg string, args ...interface{}) {
 func (sl *SummaryLogger) GetLevel() string { return sl.base.GetLevel() }
 
 func (sl *SummaryLogger) Stop() {
-	if sl.ticker != nil {
-		sl.ticker.Stop()
-	}
-	close(sl.stopCh)
-	sl.flush()
+	sl.stopOnce.Do(func() {
+		if sl.ticker != nil {
+			sl.ticker.Stop()
+		}
+		close(sl.stopCh)
+		sl.flush()
+	})
 }
 
 // ---------------------------------------------------------------------------
