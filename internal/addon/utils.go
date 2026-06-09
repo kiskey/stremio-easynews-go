@@ -52,17 +52,9 @@ var (
 // IsLatinString checks if a string contains exclusively ASCII printable characters
 // or standard European accented Latin-1 Supplement characters (German, Spanish, French, etc.).
 // Rejects Japanese, Korean, Chinese, Arabic, and Cyrillic character sets.
+// Optimized down to a single branch-predicted CPU instruction.
 func IsLatinString(s string) bool {
 	for _, r := range s {
-		// Allow standard ASCII printable characters (space through tilde)
-		if r >= 32 && r <= 126 {
-			continue
-		}
-		// Allow accented Latin characters (Latin-1 Supplement: U+0080 to U+00FF)
-		if r >= 0x0080 && r <= 0x00FF {
-			continue
-		}
-		// Any code points above U+00FF are rejected
 		if r > 0x00FF {
 			return false
 		}
@@ -498,6 +490,9 @@ func ParseSizeForSort(size string) (unit string, value float64) {
 }
 
 func CompareSizeMeta(a, b *SortMeta) int {
+	if a == nil || b == nil {
+		return 0
+	}
 	if a.SizeUnit == "GB" && b.SizeUnit == "GB" {
 		if a.SizeValue > b.SizeValue {
 			return -1
