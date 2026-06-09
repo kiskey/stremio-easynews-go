@@ -4,7 +4,7 @@ go 1.23
 
 require (
 	github.com/ProfChaos/torrent-name-parser v0.5.1
-	github.com/bytedance/sonic v1.11.0
+	github.com/bytedance/sonic v1.14.0
 	github.com/gin-gonic/gin v1.10.0
 	github.com/joho/godotenv v1.5.1
 	github.com/rs/zerolog v1.32.0
