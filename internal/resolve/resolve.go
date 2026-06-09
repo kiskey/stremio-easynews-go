@@ -2,7 +2,6 @@ package resolve
 
 import (
 	"encoding/base64"
-	"fmt"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -16,7 +15,7 @@ import (
 var (
 	easynewsHostRe = regexp.MustCompile(`(?i)^([a-z0-9-]+\.)*easynews\.com$`)
 
-	resolvedUrlCache      = make(map[string]resolvedEntry)
+	resolvedUrlCache      = make(map[string]*resolvedEntry)
 	resolvedUrlCacheMu    sync.RWMutex
 	resolvedUrlTTL        = time.Duration(shared.ParseIntEnv("RESOLVE_CACHE_TTL_SECONDS", 300)) * time.Second
 	resolvedUrlMaxEntries = 5000
@@ -110,7 +109,11 @@ func GetCachedResolvedUrl(payload string) (string, bool) {
 	}
 	if time.Now().UnixNano() > entry.expires {
 		resolvedUrlCacheMu.Lock()
-		delete(resolvedUrlCache, payload)
+		// Double-Checked Locking: Verify again under write lock to protect against race deletion of newly written fresh items
+		entryCheck, okCheck := resolvedUrlCache[payload]
+		if okCheck && time.Now().UnixNano() > entryCheck.expires {
+			delete(resolvedUrlCache, payload)
+		}
 		resolvedUrlCacheMu.Unlock()
 		return "", false
 	}
@@ -122,7 +125,7 @@ func SetCachedResolvedUrl(payload, url string) {
 	resolvedUrlCacheMu.Lock()
 	defer resolvedUrlCacheMu.Unlock()
 
-	resolvedUrlCache[payload] = resolvedEntry{
+	resolvedUrlCache[payload] = &resolvedEntry{
 		url:     url,
 		expires: time.Now().Add(resolvedUrlTTL).UnixNano(),
 	}
@@ -142,7 +145,7 @@ func SetCachedResolvedUrl(payload, url string) {
 // ClearResolvedUrlCache flushes the CDN resolution cache (used primarily for test isolation).
 func ClearResolvedUrlCache() {
 	resolvedUrlCacheMu.Lock()
-	resolvedUrlCache = make(map[string]resolvedEntry)
+	resolvedUrlCache = make(map[string]*resolvedEntry)
 	resolvedUrlCacheMu.Unlock()
 }
 
