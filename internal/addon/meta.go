@@ -645,14 +645,13 @@ func cinemetaMetaProvider(id, contentType, preferredLanguage string) (MetaProvid
 	}
 
 	return MetaProviderResponse{
-		name,
-		originalName:     name,
-		alternativeNames: alternatives,
-		year:             yearVal,
-		season,
-		episode,
-		tmdbId:           nil,
-	}
+		Name:             name,
+		OriginalName:     name,
+		AlternativeNames: alternatives,
+		Year:             yearVal,
+		Season:           season,
+		Episode:          episode,
+	}, nil
 }
 
 // ---------------------------------------------------------------------------
