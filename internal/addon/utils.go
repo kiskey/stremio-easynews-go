@@ -27,7 +27,7 @@ var (
 	bracketsRe        = regexp.MustCompile(`[\[\]\(\){}]`)
 	nonAlphanumericRe = regexp.MustCompile(`[^\w\s\x{00C0}-\x{00FF}]`)
 	
-	// Optimized: Supports standard SxxExx, unpadded SxEx, and legacy xx multiplier formats natively [1]
+	// Optimized: Supports standard SxxExx, unpadded SxEx, and legacy xx multiplier formats natively
 	seasonEpisodeRe   = regexp.MustCompile(`(?i)(s\d+e\d+|\b\d+x\d+\b)`)
 	
 	yearPatternRe     = regexp.MustCompile(`\b(19\d{2}|20\d{2})\b`)
@@ -348,7 +348,7 @@ func CreateStreamPath(file api.FileData) string {
 
 func GetQuality(title string, fallbackResolution string) string {
 	parsed, err := ParseNameSafe(title)
-	if err == nil && parsed.Resolution != "" {
+	if err == nil && parsed.Title != "" && parsed.Resolution != "" {
 		resStr := string(parsed.Resolution)
 		if resStr == "2160p" || strings.Contains(resStr, "4k") {
 			return "4K"
@@ -384,16 +384,18 @@ func GetQuality(title string, fallbackResolution string) string {
 }
 
 // ---------------------------------------------------------------------------
-// Clean, Standard Solr Query Builders (100% Strict Node.js Parity)
+// Highly Selective Solr Query Builders (Safe Fanned patterns included natively)
 // ---------------------------------------------------------------------------
 
 func BuildSearchQuery(contentType string, meta MetaProviderResponse) string {
+	exclusions := " !sample !trailer !passwd !password !preview"
+
 	switch contentType {
 	case "movie":
 		if meta.Year > 0 {
-			return fmt.Sprintf("%s %d", meta.Name, meta.Year)
+			return fmt.Sprintf("%s %d%s", meta.Name, meta.Year, exclusions)
 		}
-		return meta.Name
+		return meta.Name + exclusions
 
 	case "series":
 		if meta.Episode != "" && meta.Season != "" {
@@ -401,13 +403,19 @@ func BuildSearchQuery(contentType string, meta MetaProviderResponse) string {
 			eNum, _ := strconv.Atoi(meta.Episode)
 
 			if sNum > 0 && eNum > 0 {
-				return fmt.Sprintf("%s S%02dE%02d", meta.Name, sNum, eNum)
+				// Generate safe, index-accelerated alternative patterns (excluding raw numbers like '102' or '810' to prevent full-table scans)
+				v1 := fmt.Sprintf("S%02dE%02d", sNum, eNum) // S02E01 (Standard padded)
+				v2 := fmt.Sprintf("S%dE%d", sNum, eNum)     // S2E1 (Unpadded)
+				v3 := fmt.Sprintf("%dx%02d", sNum, eNum)    // 2x01 (Legacy multiplier)
+
+				episodeOrPipe := fmt.Sprintf("%s|%s|%s", v1, v2, v3)
+				return fmt.Sprintf("%s %s%s", meta.Name, episodeOrPipe, exclusions)
 			}
 		}
-		return meta.Name
+		return meta.Name + exclusions
 
 	default:
-		return meta.Name
+		return meta.Name + exclusions
 	}
 }
 
