@@ -280,7 +280,8 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 		for _, alt := range meta.AlternativeNames {
 			found := false
 			for _, t := range allTitles {
-				if strings.EqualFold(t, alt) {
+				// Sanitized Deduplication (Prevents redundant parallel searches for identically tokenized names) [1]
+				if SanitizeTitle(t) == SanitizeTitle(alt) {
 					found = true
 					break
 				}
@@ -313,7 +314,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 	if contentType == "movie" {
 		if meta.Year > 0 {
 			if isMultiWord(meta.Name) {
-				// Multi-word movie: safe to search both with and without year
+				// Multi-word movie: safe to search both with and without year [1]
 				noYearQueries = buildQueries(false)
 				yearQueries = buildQueries(true)
 			} else {
@@ -325,7 +326,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 			noYearQueries = buildQueries(false)
 		}
 	} else if contentType == "series" {
-		// Series search (uses standard non-year SxxExx)
+		// Series search (uses standard non-year SxxExx) [1]
 		noYearQueries = buildQueries(false)
 	}
 
@@ -430,7 +431,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 			if strings.TrimSpace(titleVariant) == "" || !isMultiWord(titleVariant) {
 				continue
 			}
-			// Build query with just the title (no season/episode) using movie config template
+			// Build query with just the title (no season/episode) using movie config template [1]
 			m := MetaProviderResponse{Name: titleVariant}
 			titleFallbackQueries = append(titleFallbackQueries, BuildSearchQuery("movie", m))
 		}
