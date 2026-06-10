@@ -163,6 +163,9 @@ func resolveTMDBID(imdbID string) (int, bool, error) {
 		findURL := fmt.Sprintf("https://api.themoviedb.org/3/find/%s?api_key=%s&external_source=imdb_id", imdbID, tmdbAPIKey)
 		req, _ := http.NewRequestWithContext(ctx, "GET", findURL, nil)
 		
+		// Set premium User-Agent to prevent WAF blocks
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
 		resp, err := fetchWithRetry(ctx, http.DefaultClient, req)
 		if err != nil {
 			return tmdbIDMapping{}, err
@@ -252,6 +255,9 @@ func getTMDBAlternativeTitles(imdbID string) ([]string, error) {
 
 		req, _ := http.NewRequestWithContext(ctx, "GET", u, nil)
 		
+		// Set premium User-Agent to prevent WAF blocks
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
 		resp, err := fetchWithRetry(ctx, http.DefaultClient, req)
 		if err != nil {
 			return nil, err
@@ -347,6 +353,10 @@ func getTMDBTranslatedTitle(imdbID, preferredLanguage string) (string, error) {
 	defer cancel()
 
 	req2, _ := http.NewRequestWithContext(ctx, "GET", detailsURL, nil)
+	
+	// Set premium User-Agent to prevent WAF blocks
+	req2.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
 	resp2, err := fetchWithRetry(ctx, http.DefaultClient, req2)
 	if err != nil {
 		return "", err
@@ -383,6 +393,10 @@ func getTMDBTranslatedTitle(imdbID, preferredLanguage string) (string, error) {
 	}
 
 	req3, _ := http.NewRequestWithContext(ctx, "GET", transURL, nil)
+	
+	// Set premium User-Agent to prevent WAF blocks
+	req3.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
 	resp3, err := fetchWithRetry(ctx, http.DefaultClient, req3)
 	if err != nil {
 		return "", err
@@ -440,6 +454,9 @@ func imdbMetaProvider(id, preferredLanguage string) (MetaProviderResponse, error
 	url := fmt.Sprintf("https://v2.sg.media-imdb.com/suggestion/t/%s.json", tt)
 	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
 	
+	// Set premium User-Agent to prevent WAF blocks
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
 	resp, err := fetchWithRetry(ctx, http.DefaultClient, req)
 	if err != nil {
 		return MetaProviderResponse{}, err
@@ -558,6 +575,9 @@ func cinemetaMetaProvider(id, contentType, preferredLanguage string) (MetaProvid
 	url := fmt.Sprintf("https://v3-cinemeta.strem.io/meta/%s/%s.json", contentType, tt)
 	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
 	
+	// Set premium User-Agent to prevent WAF blocks
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
 	resp, err := fetchWithRetry(ctx, http.DefaultClient, req)
 	if err != nil {
 		return MetaProviderResponse{}, err
@@ -625,13 +645,14 @@ func cinemetaMetaProvider(id, contentType, preferredLanguage string) (MetaProvid
 	}
 
 	return MetaProviderResponse{
-		Name:             name,
-		OriginalName:     name,
-		AlternativeNames: alternatives,
-		Year:             yearVal,
-		Season:           season,
-		Episode:          episode,
-	}, nil
+		name,
+		originalName:     name,
+		alternativeNames: alternatives,
+		year:             yearVal,
+		season,
+		episode,
+		tmdbId:           nil,
+	}
 }
 
 // ---------------------------------------------------------------------------
