@@ -4,7 +4,7 @@ package api
 type EasynewsSearchResponse struct {
 	SID               string           `json:"sid"`
 	Results           int              `json:"results"`
-	PerPage           string           `json:"perPage"`
+	PerPage           interface{}      `json:"perPage"`
 	NumPages          int              `json:"numPages"`
 	DlFarm            string           `json:"dlFarm"`
 	DlPort            int              `json:"dlPort"`
@@ -17,7 +17,7 @@ type EasynewsSearchResponse struct {
 	Returned          int              `json:"returned"`
 	UnfilteredResults int              `json:"unfilteredResults"`
 	Hidden            int              `json:"hidden"`
-	ClassicThumbs     string           `json:"classicThumbs"`
+	ClassicThumbs     interface{}      `json:"classicThumbs"`
 	Fields            Fields           `json:"fields"`
 	Hthm              int              `json:"hthm"`
 	HInfo             int              `json:"hInfo"`
