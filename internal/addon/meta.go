@@ -231,21 +231,24 @@ func resolveTMDBID(imdbID string) (int, bool, error) {
 // Dynamic Alternate Titles Resolution
 // ---------------------------------------------------------------------------
 
-func getTMDBAlternativeTitles(imdbID string) ([]string, error) {
-	if !useTMDB {
+func getTMDBAlternativeTitles(imdbID string, enableAltTitles bool, altTitleCountry string) ([]string, error) {
+	if !useTMDB || !enableAltTitles {
 		return nil, nil
 	}
 
-	if cached, ok := tmdbAltTitlesCache.Get(imdbID); ok {
+	// Use composite key to prevent cache conflicts across clients with separate country selections
+	cacheKey := fmt.Sprintf("%s:%s", imdbID, altTitleCountry)
+
+	if cached, ok := tmdbAltTitlesCache.Get(cacheKey); ok {
 		return cached, nil
 	}
 
-	res, err, _ := altTitlesSingleflight.Do(imdbID, func() (interface{}, error) {
-		if cached, ok := tmdbAltTitlesCache.Get(imdbID); ok {
+	res, err, _ := altTitlesSingleflight.Do(cacheKey, func() (interface{}, error) {
+		if cached, ok := tmdbAltTitlesCache.Get(cacheKey); ok {
 			return cached, nil
 		}
 
-		metaLogger.Info("TMDB: Fetching alternative titles for IMDb ID '%s'...", imdbID)
+		metaLogger.Info("TMDB: Fetching alternative titles for IMDb ID '%s' (filter: '%s')...", imdbID, altTitleCountry)
 
 		tmdbID, isMovie, err := resolveTMDBID(imdbID)
 		if err != nil || tmdbID == 0 {
@@ -300,35 +303,57 @@ func getTMDBAlternativeTitles(imdbID string) ([]string, error) {
 			return nil, err
 		}
 
-		var rawList []string
+		type altTitleItem struct {
+			ISO3166_1 string
+			Title     string
+		}
+
+		var rawItems []altTitleItem
 		if len(data.Titles) > 0 {
 			for _, item := range data.Titles {
-				rawList = append(rawList, item.Title)
+				rawItems = append(rawItems, altTitleItem{ISO3166_1: item.ISO3166_1, Title: item.Title})
 			}
 		} else if len(data.Results) > 0 {
 			for _, item := range data.Results {
-				rawList = append(rawList, item.Title)
+				rawItems = append(rawItems, altTitleItem{ISO3166_1: item.ISO3166_1, Title: item.Title})
 			}
 		}
 
 		var cleanList []string
 		seen := make(map[string]bool)
-		for _, t := range rawList {
-			t = strings.TrimSpace(t)
+		for _, item := range rawItems {
+			t := strings.TrimSpace(item.Title)
 			if t == "" || len(t) <= 1 {
 				continue
 			}
 			if seen[t] {
 				continue
 			}
-			if IsLatinString(t) {
+
+			iso := strings.ToUpper(item.ISO3166_1)
+			isAllowed := false
+
+			if altTitleCountry == "all" {
+				isAllowed = true
+			} else {
+				// Retain standard default English / original regions (US, GB, CA)
+				if iso == "US" || iso == "GB" || iso == "CA" || iso == "" {
+					isAllowed = true
+				}
+				// Retain titles from the chosen target country
+				if altTitleCountry != "" && iso == strings.ToUpper(altTitleCountry) {
+					isAllowed = true
+				}
+			}
+
+			if isAllowed && IsLatinString(t) {
 				seen[t] = true
 				cleanList = append(cleanList, t)
 			}
 		}
 
-		tmdbAltTitlesCache.Set(imdbID, cleanList)
-		metaLogger.Info("TMDB: Successfully resolved %d Latin alternative titles for IMDb ID '%s': %v", len(cleanList), imdbID, cleanList)
+		tmdbAltTitlesCache.Set(cacheKey, cleanList)
+		metaLogger.Info("TMDB: Successfully resolved %d filtered Latin alternative titles for IMDb ID '%s': %v", len(cleanList), imdbID, cleanList)
 		return cleanList, nil
 	})
 
@@ -459,7 +484,7 @@ func getTMDBTranslatedTitle(imdbID, preferredLanguage string) (string, error) {
 // IMDb Metadata Lookup Provider
 // ---------------------------------------------------------------------------
 
-func imdbMetaProvider(id, preferredLanguage string) (MetaProviderResponse, error) {
+func imdbMetaProvider(id, preferredLanguage string, enableAltTitles bool, altTitleCountry string) (MetaProviderResponse, error) {
 	parts := strings.Split(id, ":")
 	tt := parts[0]
 	var season, episode string
@@ -525,7 +550,7 @@ func imdbMetaProvider(id, preferredLanguage string) (MetaProviderResponse, error
 	alternatives := GetAlternativeTitles(originalName)
 
 	if useTMDB {
-		altTitles, err := getTMDBAlternativeTitles(tt)
+		altTitles, err := getTMDBAlternativeTitles(tt, enableAltTitles, altTitleCountry)
 		if err == nil && len(altTitles) > 0 {
 			for _, alt := range altTitles {
 				isDup := false
@@ -585,7 +610,7 @@ func imdbMetaProvider(id, preferredLanguage string) (MetaProviderResponse, error
 // Cinemeta Metadata Lookup Provider (Fallback)
 // ---------------------------------------------------------------------------
 
-func cinemetaMetaProvider(id, contentType, preferredLanguage string) (MetaProviderResponse, error) {
+func cinemetaMetaProvider(id, contentType, preferredLanguage string, enableAltTitles bool, altTitleCountry string) (MetaProviderResponse, error) {
 	parts := strings.Split(id, ":")
 	tt := parts[0]
 	var season, episode string
@@ -642,7 +667,7 @@ func cinemetaMetaProvider(id, contentType, preferredLanguage string) (MetaProvid
 	alternatives := GetAlternativeTitles(name)
 
 	if useTMDB {
-		altTitles, err := getTMDBAlternativeTitles(tt)
+		altTitles, err := getTMDBAlternativeTitles(tt, enableAltTitles, altTitleCountry)
 		if err == nil && len(altTitles) > 0 {
 			for _, alt := range altTitles {
 				isDup := false
@@ -689,15 +714,15 @@ func cinemetaMetaProvider(id, contentType, preferredLanguage string) (MetaProvid
 // Public Metadata Gateway Interface
 // ---------------------------------------------------------------------------
 
-func PublicMetaProvider(id, contentType, preferredLanguage string) (MetaProviderResponse, error) {
-	meta, err := imdbMetaProvider(id, preferredLanguage)
+func PublicMetaProvider(id, contentType, preferredLanguage string, enableAltTitles bool, altTitleCountry string) (MetaProviderResponse, error) {
+	meta, err := imdbMetaProvider(id, preferredLanguage, enableAltTitles, altTitleCountry)
 	if err == nil && meta.Name != "" {
 		return meta, nil
 	}
 
 	metaLogger.Debug("IMDb metadata lookup failed, falling back to Cinemeta: %v", err)
 
-	meta, err = cinemetaMetaProvider(id, contentType, preferredLanguage)
+	meta, err = cinemetaMetaProvider(id, contentType, preferredLanguage, enableAltTitles, altTitleCountry)
 	if err == nil && meta.Name != "" {
 		return meta, nil
 	}
