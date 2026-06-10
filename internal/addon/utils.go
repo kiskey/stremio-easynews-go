@@ -51,11 +51,11 @@ var (
 )
 
 // ParseNameSafe wraps tnp.ParseName in a recover block to prevent unmaintained third-party library crashes
-func ParseNameSafe(title string) (parsed *tnp.Torrent, err error) {
+func ParseNameSafe(title string) (parsed tnp.Torrent, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("tnp parser panic on '%s': %v", title, r)
-			parsed = nil
+			parsed = tnp.Torrent{}
 		}
 	}()
 	return tnp.ParseName(title)
@@ -191,7 +191,7 @@ func MatchesTitle(title, query string, strict bool) bool {
 		}
 
 		parsed, err := ParseNameSafe(title)
-		if err == nil && parsed != nil && parsed.Title != "" {
+		if err == nil && parsed.Title != "" {
 			sanitizedParsed := SanitizeTitle(parsed.Title)
 			queryWords := strings.Fields(sanitizedQuery)
 
@@ -345,7 +345,7 @@ func CreateStreamPath(file api.FileData) string {
 
 func GetQuality(title string, fallbackResolution string) string {
 	parsed, err := ParseNameSafe(title)
-	if err == nil && parsed != nil && parsed.Resolution != "" {
+	if err == nil && parsed.Resolution != "" {
 		resStr := string(parsed.Resolution)
 		if resStr == "2160p" || strings.Contains(resStr, "4k") {
 			return "4K"
