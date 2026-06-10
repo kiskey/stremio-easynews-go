@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"fmt"
-	"hash/fnv"
 	"io"
 	"net/http"
 	"net/url"
@@ -210,7 +209,7 @@ func (api *EasynewsAPI) Search(opts SearchOptions) (EasynewsSearchResponse, erro
 	q.Set("gps", opts.Query)
 	u.RawQuery = q.Encode()
 
-	apiLogger.Info("Querying Easynews advanced search: '%s' (pno: %d, pby: %d, sort1: %s)", opts.Query, opts.PageNr, opts.MaxResults, opts.Sort1)
+	apiLogger.Info("Solr: Querying Easynews URL: '%s...'", u.String()[:100])
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -221,7 +220,7 @@ func (api *EasynewsAPI) Search(opts SearchOptions) (EasynewsSearchResponse, erro
 	}
 	req.Header.Set("Authorization", CreateBasic(api.username, api.password))
 	
-	// Set standard browser User-Agent to bypass any network security / WAF blocking
+	// Set premium User-Agent to prevent WAF blocks
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
 	resp, err := api.client.Do(req)
@@ -232,16 +231,17 @@ func (api *EasynewsAPI) Search(opts SearchOptions) (EasynewsSearchResponse, erro
 		return EasynewsSearchResponse{}, err
 	}
 	defer func() {
+		// Drain body to make sure connection is available for reuse in transport pool
 		_, _ = io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 	}()
 
 	if resp.StatusCode == http.StatusUnauthorized {
-		apiLogger.Error("Easynews API request returned 401 Unauthorized for user: %s", api.username)
+		apiLogger.Error("Solr: Request returned 401 Unauthorized for user: %s", api.username)
 		return EasynewsSearchResponse{}, fmt.Errorf("authentication failed: invalid username or password")
 	}
 	if resp.StatusCode != http.StatusOK {
-		apiLogger.Error("Easynews API request returned failed status code: %d (%s) for query: '%s'", resp.StatusCode, resp.Status, opts.Query)
+		apiLogger.Error("Solr: Request returned failed status code: %d (%s) for query: '%s'", resp.StatusCode, resp.Status, opts.Query)
 		return EasynewsSearchResponse{}, fmt.Errorf("failed to fetch search results of query '%s': %d %s", opts.Query, resp.StatusCode, resp.Status)
 	}
 
@@ -250,7 +250,7 @@ func (api *EasynewsAPI) Search(opts SearchOptions) (EasynewsSearchResponse, erro
 		return EasynewsSearchResponse{}, fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	apiLogger.Info("Solr search successfully returned %d files (out of %d total matched in Solr) for query '%s'", len(result.Data), result.Results, opts.Query)
+	apiLogger.Info("Solr: Successfully returned %d files (out of %d total matched in Solr) for query '%s'", len(result.Data), result.Results, opts.Query)
 
 	api.setCache(cacheKey, result)
 	return result, nil
@@ -269,11 +269,12 @@ func (api *EasynewsAPI) SearchAll(opts SearchOptions) (EasynewsSearchResponse, e
 	pageCount := 0
 	var previousFirstHash string
 
-	apiLogger.Info("Executing fanned pagination searchAll for: '%s' (max results: %d, max pages: %d)", opts.Query, totalMaxResults, maxPages)
+	apiLogger.Info("SearchAll: Executing fanned pagination searchAll for: '%s' (max results: %d, max pages: %d)", opts.Query, totalMaxResults, maxPages)
 
 	for pageCount < maxPages {
 		remaining := totalMaxResults - len(allData)
 		if remaining <= 0 {
+			apiLogger.Info("SearchAll: Reached max requested results limit (%d), stopping pagination.", totalMaxResults)
 			break
 		}
 
@@ -286,9 +287,13 @@ func (api *EasynewsAPI) SearchAll(opts SearchOptions) (EasynewsSearchResponse, e
 		pageOpts.PageNr = pageNr
 		pageOpts.MaxResults = optimalPageSize
 
+		apiLogger.Info("SearchAll: Fetching page %d (optimal page size: %d) for query '%s'", pageNr, optimalPageSize, opts.Query)
+
 		pageResult, err := api.Search(pageOpts)
 		if err != nil {
+			apiLogger.Error("SearchAll: Error fetching page %d: %v", pageNr, err)
 			if len(allData) > 0 {
+				apiLogger.Info("SearchAll: Returning %d partial results gathered before the error.", len(allData))
 				res.Data = allData
 				return res, nil
 			}
@@ -300,20 +305,27 @@ func (api *EasynewsAPI) SearchAll(opts SearchOptions) (EasynewsSearchResponse, e
 		newData := pageResult.Data
 
 		if len(newData) == 0 {
+			apiLogger.Info("SearchAll: Received empty dataset on page %d, ending pagination.", pageNr)
 			break
 		}
 
 		if previousFirstHash != "" && newData[0].Zero == previousFirstHash {
+			apiLogger.Info("SearchAll: Duplicate data detected on page %d (first item hash matches previous page), stopping pagination.", pageNr)
 			break
 		}
 		previousFirstHash = newData[0].Zero
 
 		allData = append(allData, newData...)
+		
+		// Render continuous progress logs to keep the operator informed of the search progress
+		percent := (len(allData) * 100) / totalMaxResults
+		apiLogger.Info("SearchAll: Progress - %d/%d unique files indexed (%d%%)", len(allData), totalMaxResults, percent)
 
 		if len(allData) >= totalMaxResults {
 			if len(allData) > totalMaxResults {
 				allData = allData[:totalMaxResults]
 			}
+			apiLogger.Info("SearchAll: Reached max requested results limit (%d), stopping pagination.", totalMaxResults)
 			break
 		}
 
@@ -321,5 +333,6 @@ func (api *EasynewsAPI) SearchAll(opts SearchOptions) (EasynewsSearchResponse, e
 	}
 
 	res.Data = allData
+	apiLogger.Info("SearchAll complete: gathered %d total unique results across %d pages for query '%s'", len(allData), pageCount, opts.Query)
 	return res, nil
 }
