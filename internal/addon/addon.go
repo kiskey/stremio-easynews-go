@@ -27,6 +27,8 @@ type AddonConfig struct {
 	Username             string `json:"username"`
 	Password             string `json:"password"`
 	StrictTitleMatching  string `json:"strictTitleMatching"`
+	EnableAltTitles      string `json:"enableAltTitles"`
+	AltTitleCountry      string `json:"altTitleCountry"`
 	PreferredLanguage    string `json:"preferredLanguage"`
 	SortingPreference    string `json:"sortingPreference"`
 	ShowQualities        string `json:"showQualities"`
@@ -38,6 +40,8 @@ type AddonConfig struct {
 
 var defaultConfig = AddonConfig{
 	StrictTitleMatching:  "true",
+	EnableAltTitles:      "true",
+	AltTitleCountry:      "",
 	PreferredLanguage:    "",
 	SortingPreference:    "quality_first",
 	ShowQualities:        "4k,1080p,720p,480p",
@@ -75,6 +79,8 @@ func ParseConfig(configStr string) AddonConfig {
 		if u := values.Get("username"); u != "" { config.Username = u }
 		if p := values.Get("password"); p != "" { config.Password = p }
 		if s := values.Get("strictTitleMatching"); s != "" { config.StrictTitleMatching = s }
+		if e := values.Get("enableAltTitles"); e != "" { config.EnableAltTitles = e }
+		if c := values.Get("altTitleCountry"); c != "" { config.AltTitleCountry = c }
 		if l := values.Get("preferredLanguage"); l != "" { config.PreferredLanguage = l }
 		if o := values.Get("sortingPreference"); o != "" { config.SortingPreference = o }
 		if q := values.Get("showQualities"); q != "" { config.ShowQualities = q }
@@ -202,7 +208,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 		return StreamHandlerResult{Streams: []Stream{}}, nil
 	}
 
-	cacheKey := fmt.Sprintf("%s:v3:user=%s:strict=%s:lang=%s:sort=%s:qualities=%s:maxPerQuality=%s:maxSize=%s",
+	cacheKey := fmt.Sprintf("%s:v3:user=%s:strict=%s:lang=%s:sort=%s:qualities=%s:maxPerQuality=%s:maxSize=%s:enableAlt=%s:altCountry=%s",
 		id,
 		config.Username,
 		config.StrictTitleMatching,
@@ -211,6 +217,8 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 		config.ShowQualities,
 		config.MaxResultsPerQuality,
 		config.MaxFileSize,
+		config.EnableAltTitles,
+		config.AltTitleCountry,
 	)
 
 	if cached, ok := getFromRequestCache(cacheKey); ok {
@@ -219,6 +227,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 	}
 
 	useStrictMatching := config.StrictTitleMatching == "on" || config.StrictTitleMatching == "true" || config.StrictTitleMatching == ""
+	enableAltTitles := config.EnableAltTitles == "true" || config.EnableAltTitles == "on" || config.EnableAltTitles == ""
 	preferredLang := config.PreferredLanguage
 	sortingPreference := config.SortingPreference
 	if sortingPreference == "" {
@@ -252,7 +261,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 		return authErrorStream(config.UILanguage), nil
 	}
 
-	meta, err := PublicMetaProvider(id, contentType, preferredLang)
+	meta, err := PublicMetaProvider(id, contentType, preferredLang, enableAltTitles, config.AltTitleCountry)
 	if err != nil {
 		addonLogger.Error("Metadata lookup failed for ID %s (type=%s): %v", id, contentType, err)
 		return StreamHandlerResult{Streams: []Stream{}, CacheMaxAge: errorCacheMaxAge}, nil
