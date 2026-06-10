@@ -72,6 +72,10 @@ func ServeHTTP(port int) {
 				m.Config[i].Default = config.Password
 			case "strictTitleMatching":
 				m.Config[i].Default = config.StrictTitleMatching
+			case "enableAltTitles":
+				m.Config[i].Default = config.EnableAltTitles
+			case "altTitleCountry":
+				m.Config[i].Default = config.AltTitleCountry
 			case "preferredLanguage":
 				m.Config[i].Default = config.PreferredLanguage
 			case "sortingPreference":
@@ -200,6 +204,10 @@ func ServeHTTP(port int) {
 				if config.Password != "" { m.Config[i].Default = config.Password }
 			case "strictTitleMatching":
 				if config.StrictTitleMatching != "" { m.Config[i].Default = config.StrictTitleMatching }
+			case "enableAltTitles":
+				if config.EnableAltTitles != "" { m.Config[i].Default = config.EnableAltTitles }
+			case "altTitleCountry":
+				if config.AltTitleCountry != "" { m.Config[i].Default = config.AltTitleCountry }
 			case "preferredLanguage":
 				if config.PreferredLanguage != "" { m.Config[i].Default = config.PreferredLanguage }
 			case "sortingPreference":
