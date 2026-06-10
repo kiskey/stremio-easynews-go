@@ -385,7 +385,14 @@ func BuildSearchQuery(contentType string, meta MetaProviderResponse) string {
 			eNum, _ := strconv.Atoi(meta.Episode)
 
 			if sNum > 0 && eNum > 0 {
-				return fmt.Sprintf("%s S%02dE%02d%s", meta.Name, sNum, eNum, exclusions)
+				v1 := fmt.Sprintf("S%02dE%02d", sNum, eNum) // S08E10 (Standard Scene)
+				v2 := fmt.Sprintf("S%dE%d", sNum, eNum)     // S8E10 (No leading zeros)
+				v3 := fmt.Sprintf("%dx%02d", sNum, eNum)    // 8x10 (Alternative divider)
+
+				// Safe, index-accelerated OR query fanning (excl. broad raw numbers like '810')
+				episodeOrPipe := fmt.Sprintf("%s|%s|%s", v1, v2, v3)
+
+				return fmt.Sprintf("%s %s%s", meta.Name, episodeOrPipe, exclusions)
 			}
 		}
 		return meta.Name + exclusions
