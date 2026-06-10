@@ -32,20 +32,21 @@ var (
 	digitsOnlyRe      = regexp.MustCompile(`\d+`)
 	floatValueRe      = regexp.MustCompile(`[\d.]+`)
 
+	// Compiled with case-insensitive (?i) flags to prevent strings.ToLower allocations
 	fallbackQualityPatterns = []struct {
 		re      *regexp.Regexp
 		quality string
 	}{
-		{regexp.MustCompile(`\b720p\b`), "720p"},
-		{regexp.MustCompile(`\b1080p\b`), "1080p"},
-		{regexp.MustCompile(`\b2160p\b`), "4K/2160p"},
-		{regexp.MustCompile(`\b4k\b`), "4K"},
-		{regexp.MustCompile(`\buhd\b`), "4K/UHD"},
-		{regexp.MustCompile(`\bhdr\b`), "HDR"},
-		{regexp.MustCompile(`\bhq\b`), "HQ"},
-		{regexp.MustCompile(`\bbdrip\b`), "BDRip"},
-		{regexp.MustCompile(`\bbluray\b`), "BluRay"},
-		{regexp.MustCompile(`\bweb-?dl\b`), "WEB-DL"},
+		{regexp.MustCompile(`(?i)\b720p\b`), "720p"},
+		{regexp.MustCompile(`(?i)\b1080p\b`), "1080p"},
+		{regexp.MustCompile(`(?i)\b2160p\b`), "4K/2160p"},
+		{regexp.MustCompile(`(?i)\b4k\b`), "4K"},
+		{regexp.MustCompile(`(?i)\buhd\b`), "4K/UHD"},
+		{regexp.MustCompile(`(?i)\bhdr\b`), "HDR"},
+		{regexp.MustCompile(`(?i)\bhq\b`), "HQ"},
+		{regexp.MustCompile(`(?i)\bbdrip\b`), "BDRip"},
+		{regexp.MustCompile(`(?i)\bbluray\b`), "BluRay"},
+		{regexp.MustCompile(`(?i)\bweb-?dl\b`), "WEB-DL"},
 	}
 )
 
@@ -352,23 +353,26 @@ func GetQuality(title string, fallbackResolution string) string {
 		return resStr
 	}
 
-	lowerTitle := strings.ToLower(title)
+	// Zero-Allocation Hot Path Match: No string.ToLower() dynamic heap allocation
 	for _, p := range fallbackQualityPatterns {
-		if p.re.MatchString(lowerTitle) {
+		if p.re.MatchString(title) {
 			return p.quality
 		}
 	}
 
 	if fallbackResolution != "" {
-		// Defensive mapping: clean raw dimensions into standard labels to satisfy custom quality filters
-		cleanRes := strings.ReplaceAll(strings.ToLower(fallbackResolution), " ", "")
-		if strings.Contains(cleanRes, "3840x2160") || strings.Contains(cleanRes, "2160p") {
+		// Allocation-Free parsing using direct Boyer-Moore primitive substring scans
+		has2160 := strings.Contains(fallbackResolution, "2160") || strings.Contains(fallbackResolution, "4k") || strings.Contains(fallbackResolution, "4K")
+		has1080 := strings.Contains(fallbackResolution, "1080")
+		has720  := strings.Contains(fallbackResolution, "720")
+
+		if has2160 {
 			return "4K"
 		}
-		if strings.Contains(cleanRes, "1920x1080") || strings.Contains(cleanRes, "1080p") {
+		if has1080 {
 			return "1080p"
 		}
-		if strings.Contains(cleanRes, "1280x720") || strings.Contains(cleanRes, "720p") {
+		if has720 {
 			return "720p"
 		}
 		return fallbackResolution
