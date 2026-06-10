@@ -198,7 +198,7 @@ func (api *EasynewsAPI) Search(opts SearchOptions) (EasynewsSearchResponse, erro
 	q.Set("u", "1")
 	q.Set("gx", "1")
 	q.Set("pno", strconv.Itoa(opts.PageNr))
-	q.Set("sS", "3")
+	q.Set("sS", "3") // Search Scope: 3 = Subject + Filename (Node.js reference parity)
 	q.Set("s1", opts.Sort1)
 	q.Set("s1d", opts.Sort1Direction)
 	q.Set("s2", opts.Sort2)
