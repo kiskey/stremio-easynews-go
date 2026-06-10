@@ -25,7 +25,7 @@ type EasynewsSearchResponse struct {
 	SS                string           `json:"sS"`
 	Stemmed           string           `json:"stemmed"`
 	
-	// Upgraded to interface{} to prevent runtime type mismatch crashes if Solr returns them as arrays or strings
+	// Safely defined as interface{} to prevent decoding failures on different query formats
 	LargeThumb        interface{}      `json:"largeThumb"`
 	LargeThumbSize    interface{}      `json:"largeThumbSize"`
 	
@@ -34,49 +34,49 @@ type EasynewsSearchResponse struct {
 
 // FileData represents a single file result. Numeric JSON keys map to string indexes.
 type FileData struct {
-	Zero          string      `json:"0"` // Hash ID
-	One           string      `json:"1"` // Unknown
-	Two           string      `json:"2"` // File extension
-	Three         string      `json:"3"` // Unknown
-	Four          string      `json:"4"` // Size string (e.g., "1.5 GB")
-	Five          string      `json:"5"` // Date string
-	Six           string      `json:"6"` // Unknown
-	Seven         string      `json:"7"` // Unknown
-	Eight         string      `json:"8"` // Unknown
-	Nine          string      `json:"9"` // Group
-	Ten           string      `json:"10"` // Post title / thumbnail slug
-	Eleven        string      `json:"11"` // Extension (for path)
-	Twelve        string      `json:"12"` // Compression standard
-	Thirteen      string      `json:"13"` // Unknown
-	Fourteen      string      `json:"14"` // Duration string
-	Fifteen       int         `json:"15"` // Unknown numeric
-	Sixteen       int         `json:"16"` // Unknown numeric
-	Seventeen     int         `json:"17"` // Unknown numeric
-	Eighteen      string      `json:"18"` // Coding format
-	Nineteen      string      `json:"19"` // Unknown
-	ThirtyFive    string      `json:"35"` // Unknown
-	Type          string      `json:"type"` // Content type (e.g. VIDEO)
-	Height        string      `json:"height"`
-	Width         string      `json:"width"`
-	Theight       int         `json:"theight"`
-	Twidth        int         `json:"twidth"`
-	Fullres       string      `json:"fullres"`
-	Alangs        []string    `json:"alangs"`
+	Zero          string      `json:"0"` // Hash ID (Read!)
+	One           interface{} `json:"1"`
+	Two           string      `json:"2"` // File extension (Read!)
+	Three         interface{} `json:"3"`
+	Four          string      `json:"4"` // Size string (Read!)
+	Five          string      `json:"5"` // Date string (Read!)
+	Six           interface{} `json:"6"`
+	Seven         interface{} `json:"7"`
+	Eight         interface{} `json:"8"`
+	Nine          interface{} `json:"9"`
+	Ten           string      `json:"10"` // Post title (Read!)
+	Eleven        string      `json:"11"` // Extension (Read!)
+	Twelve        interface{} `json:"12"`
+	Thirteen      interface{} `json:"13"`
+	Fourteen      string      `json:"14"` // Duration string (Read!)
+	Fifteen       interface{} `json:"15"`
+	Sixteen       interface{} `json:"16"`
+	Seventeen     interface{} `json:"17"`
+	Eighteen      interface{} `json:"18"`
+	Nineteen      interface{} `json:"19"`
+	ThirtyFive    interface{} `json:"35"`
+	Type          string      `json:"type"` // Content type (Read!)
+	Height        interface{} `json:"height"`
+	Width         interface{} `json:"width"`
+	Theight       interface{} `json:"theight"`
+	Twidth        interface{} `json:"twidth"`
+	Fullres       string      `json:"fullres"` // (Read!)
+	Alangs        []string    `json:"alangs"` // (Read!)
 	Slangs        interface{} `json:"slangs"`
-	Passwd        bool        `json:"passwd"`
-	Virus         bool        `json:"virus"`
-	Expires       string      `json:"expires"`
-	Nfo           string      `json:"nfo"`
-	Ts            int64       `json:"ts"`      // Unix timestamp (seconds)
-	RawSize       int64       `json:"rawSize"` // Size in bytes
-	Volume        bool        `json:"volume"`
-	Sc            bool        `json:"sc"`
-	PrimaryURL    string      `json:"primaryURL"`
-	FallbackURL   string      `json:"fallbackURL"`
-	Sb            int         `json:"sb"`
-	Size          int64       `json:"size"`
-	Runtime       int         `json:"runtime"`
-	Sig           string      `json:"sig"`
+	Passwd        bool        `json:"passwd"` // (Read!)
+	Virus         bool        `json:"virus"` // (Read!)
+	Expires       interface{} `json:"expires"`
+	Nfo           interface{} `json:"nfo"`
+	Ts            int64       `json:"ts"`      // Unix timestamp (Read!)
+	RawSize       int64       `json:"rawSize"` // Size in bytes (Read!)
+	Volume        interface{} `json:"volume"`
+	Sc            interface{} `json:"sc"`
+	PrimaryURL    interface{} `json:"primaryURL"`
+	FallbackURL   interface{} `json:"fallbackURL"`
+	Sb            interface{} `json:"sb"`
+	Size          interface{} `json:"size"`
+	Runtime       interface{} `json:"runtime"`
+	Sig           interface{} `json:"sig"`
 }
 
 // ---------------------------------------------------------------------------
@@ -124,6 +124,6 @@ type Fields struct {
 }
 
 type GsColumn struct {
-	num  int    `json:"num"`
-	name string `json:"name"`
+	Num  int    `json:"num"`
+	Name string `json:"name"`
 }
