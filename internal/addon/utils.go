@@ -293,11 +293,14 @@ func CreateStreamUrl(downURL string, dlFarm string, dlPort int, username, passwo
 		effectiveBaseUrl = os.Getenv("ADDON_BASE_URL")
 	}
 
+	// Safeguard: Escape any raw spaces in file paths before constructing target URLs to prevent parsing failures
+	sanitizedFilePath := strings.ReplaceAll(filePath, " ", "%20")
+
 	if effectiveBaseUrl == "" {
 		if os.Getenv("ALLOW_INSECURE_CREDENTIAL_URLS") == "true" {
 			url := fmt.Sprintf("%s/%s/%d/%s",
 				strings.Replace(downURL, "https://", fmt.Sprintf("https://%s:%s@", username, password), 1),
-				dlFarm, dlPort, filePath)
+				dlFarm, dlPort, sanitizedFilePath)
 			return url, nil
 		}
 		return "", &MissingBaseUrlError{
@@ -305,9 +308,12 @@ func CreateStreamUrl(downURL string, dlFarm string, dlPort int, username, passwo
 		}
 	}
 
-	fullUrl := fmt.Sprintf("%s/%s/%d/%s", downURL, dlFarm, dlPort, filePath)
+	fullUrl := fmt.Sprintf("%s/%s/%d/%s", downURL, dlFarm, dlPort, sanitizedFilePath)
 	authUrl := fmt.Sprintf("%s?u=%s&p=%s", fullUrl, url.QueryEscape(username), url.QueryEscape(password))
-	encodedUrl := base64.URLEncoding.EncodeToString([]byte(authUrl))
+	
+	// Optimized: Uses RawURLEncoding (unpadded) to match Node's 'base64url' output exactly, preventing player URL parsing errors
+	encodedUrl := base64.RawURLEncoding.EncodeToString([]byte(authUrl))
+	
 	fileName := path.Base(filePath)
 	normalizedBase := strings.TrimRight(effectiveBaseUrl, "/")
 
@@ -353,7 +359,6 @@ func GetQuality(title string, fallbackResolution string) string {
 // ---------------------------------------------------------------------------
 
 func BuildSearchQuery(contentType string, meta MetaProviderResponse) string {
-	// Exclude standard trailer, sample, and password-protected spam files directly at the Solr level
 	exclusions := " !sample !trailer !passwd !password !preview"
 
 	switch contentType {
@@ -370,16 +375,13 @@ func BuildSearchQuery(contentType string, meta MetaProviderResponse) string {
 			eNum, _ := strconv.Atoi(meta.Episode)
 
 			if sNum > 0 && eNum > 0 {
-				// 1. Generate all highly-common Scene/P2P naming variations
-				v1 := fmt.Sprintf("S%02dE%02d", sNum, eNum) // e.g. S01E05
-				v2 := fmt.Sprintf("%dx%02d", sNum, eNum)   // e.g. 1x05
-				v3 := fmt.Sprintf("%d%02d", sNum, eNum)    // e.g. 105
-				v4 := fmt.Sprintf("S%dE%d", sNum, eNum)     // e.g. S1E5
+				v1 := fmt.Sprintf("S%02dE%02d", sNum, eNum) // S01E05
+				v2 := fmt.Sprintf("%dx%02d", sNum, eNum)   // 1x05
+				v3 := fmt.Sprintf("%d%02d", sNum, eNum)    // 105
+				v4 := fmt.Sprintf("S%dE%d", sNum, eNum)     // S1E5
 
-				// 2. Consolidate into a single high-efficiency search string using the Solr pipe '|' operator
 				episodeOrPipe := fmt.Sprintf("%s|%s|%s|%s", v1, v2, v3, v4)
 
-				// 3. Return the smart Solr query (e.g., "From S01E05|1x05|105|S1E5 !sample !trailer...")
 				return fmt.Sprintf("%s %s%s", meta.Name, episodeOrPipe, exclusions)
 			}
 		}
