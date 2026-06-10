@@ -29,3 +29,13 @@ type SortMeta struct {
 	DateMs           int64
 	HasPreferredLang bool
 }
+
+// MetaProviderResponse represents the standard metadata structure returned by providers (IMDb/Cinemeta).
+type MetaProviderResponse struct {
+	Name             string
+	OriginalName     string
+	AlternativeNames []string
+	Year             int
+	Season           string
+	Episode          string
+}
