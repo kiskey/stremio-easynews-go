@@ -24,8 +24,11 @@ type EasynewsSearchResponse struct {
 	St                string           `json:"st"`
 	SS                string           `json:"sS"`
 	Stemmed           string           `json:"stemmed"`
-	LargeThumb        string           `json:"largeThumb"`
-	LargeThumbSize    string           `json:"largeThumbSize"`
+	
+	// Upgraded to interface{} to prevent runtime type mismatch crashes if Solr returns them as arrays or strings
+	LargeThumb        interface{}      `json:"largeThumb"`
+	LargeThumbSize    interface{}      `json:"largeThumbSize"`
+	
 	GsColumns         []GsColumn       `json:"gsColumns"`
 }
 
@@ -121,6 +124,6 @@ type Fields struct {
 }
 
 type GsColumn struct {
-	Num  int    `json:"num"`
-	Name string `json:"name"`
+	num  int    `json:"num"`
+	name string `json:"name"`
 }
