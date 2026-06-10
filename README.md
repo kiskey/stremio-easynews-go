@@ -70,7 +70,7 @@ In Alpine Linux, service-specific variables must reside in `/etc/conf.d/stremio-
    EASYNEWS_SUMMARIZE_LOGS=true
 
    # Your public instance URL (used for stream resolution redirection)
-   ADDON_BASE_URL=https://sen.mjlan.duckdns.org
+   ADDON_BASE_URL=https://abcd.duckdns.org   # could be the localhost or ip with port format too. stremio looks for https url , nuvio might work with ip without https
 
    # Optional TMDB API Key for dynamic alternative titles and localized translations
    TMDB_API_KEY=your_tmdb_api_key_here
