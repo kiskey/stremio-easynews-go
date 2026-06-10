@@ -14,9 +14,9 @@ COPY . .
 # Resolve all dependencies dynamically and generate go.sum checksum entries
 RUN go mod tidy
 
-# Build static binary optimized for size and security
+# Build static binary optimized for size and security (Injected with valid SemVer)
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build -trimpath -ldflags="-s -w -X github.com/kiskey/stremio-easynews-go/internal/shared.Version=prod" \
+    go build -trimpath -ldflags="-s -w -X github.com/kiskey/stremio-easynews-go/internal/shared.Version=2.8.5" \
     -o stremio-easynews cmd/addon/main.go
 
 # ===========================================================================
