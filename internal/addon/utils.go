@@ -49,6 +49,17 @@ var (
 	}
 )
 
+// ParseNameSafe wraps tnp.ParseName in a recover block to prevent unmaintained third-party library crashes
+func ParseNameSafe(title string) (parsed *tnp.Torrent, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("tnp parser panic on '%s': %v", title, r)
+			parsed = nil
+		}
+	}()
+	return tnp.ParseName(title)
+}
+
 // IsLatinString checks if a string contains exclusively ASCII printable characters
 // or standard European accented Latin-1 Supplement characters (German, Spanish, French, etc.).
 // Rejects Japanese, Korean, Chinese, Arabic, and Cyrillic character sets.
@@ -178,8 +189,8 @@ func MatchesTitle(title, query string, strict bool) bool {
 			return isExactWordMatch
 		}
 
-		parsed, err := tnp.ParseName(title)
-		if err == nil && parsed.Title != "" {
+		parsed, err := ParseNameSafe(title)
+		if err == nil && parsed != nil && parsed.Title != "" {
 			sanitizedParsed := SanitizeTitle(parsed.Title)
 			queryWords := strings.Fields(sanitizedQuery)
 
@@ -332,8 +343,8 @@ func CreateStreamPath(file api.FileData) string {
 // ---------------------------------------------------------------------------
 
 func GetQuality(title string, fallbackResolution string) string {
-	parsed, err := tnp.ParseName(title)
-	if err == nil && parsed.Resolution != "" {
+	parsed, err := ParseNameSafe(title)
+	if err == nil && parsed != nil && parsed.Resolution != "" {
 		resStr := string(parsed.Resolution)
 		if resStr == "2160p" || strings.Contains(resStr, "4k") {
 			return "4K"
