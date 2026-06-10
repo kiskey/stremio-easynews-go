@@ -54,7 +54,19 @@ func ParseConfig(configStr string) AddonConfig {
 		return config
 	}
 
-	// Try URL query format (replacing common separators like | with &)
+	// 1. Try URL-decoded JSON parsing (to support original Node.js addon URLs)
+	if decodedStr, err := url.QueryUnescape(configStr); err == nil {
+		if strings.HasPrefix(decodedStr, "{") && strings.HasSuffix(decodedStr, "}") {
+			var jsonConfig AddonConfig
+			if err := sonic.Unmarshal([]byte(decodedStr), &jsonConfig); err == nil {
+				if jsonConfig.Username != "" {
+					return jsonConfig
+				}
+			}
+		}
+	}
+
+	// 2. Try URL query format (replacing common separators like | with &)
 	normalized := strings.ReplaceAll(configStr, "|", "&")
 	normalized = strings.ReplaceAll(normalized, ";", "&")
 	
@@ -73,7 +85,7 @@ func ParseConfig(configStr string) AddonConfig {
 		return config
 	}
 
-	// Try URL-safe Base64 JSON parsing
+	// 3. Try URL-safe Base64 JSON parsing
 	decoded, err := base64.URLEncoding.DecodeString(configStr)
 	if err == nil {
 		var b64Config AddonConfig
@@ -326,6 +338,8 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 				opts := api.SearchOptions{Query: query}
 				res, err := easynewsAPI.SearchAll(opts)
 				if err != nil {
+					// Fixed: Expose and log Solr network failures in the console (no longer swallowed silently)
+					addonLogger.Error("Easynews Solr search failed for query '%s': %v", query, err)
 					if IsAuthError(err) {
 						return err
 					}
@@ -481,7 +495,6 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 		}
 	}
 
-	// Metrics report upgraded to INFO level for high visibility
 	addonLogger.Info("Search complete: totalFilesSeen=%d matchingCount=%d (rejected: sample/quality=%d, duplicate=%d, titleMismatch=%d)",
 		totalFilesSeen, len(streams), rejectedSample, rejectedDuplicate, rejectedTitle)
 
