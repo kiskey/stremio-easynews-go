@@ -279,16 +279,12 @@ func (api *EasynewsAPI) SearchAll(opts SearchOptions) (EasynewsSearchResponse, e
 			break
 		}
 
-		optimalPageSize := remaining
-		if optimalPageSize > maxResultsPerPage {
-			optimalPageSize = maxResultsPerPage
-		}
-
+		// Keep page size constant to prevent Solr offset corruption (Offset = (PageNumber - 1) * PageSize)
 		pageOpts := opts
 		pageOpts.PageNr = pageNr
-		pageOpts.MaxResults = optimalPageSize
+		pageOpts.MaxResults = maxResultsPerPage
 
-		apiLogger.Info("SearchAll: Fetching page %d (optimal page size: %d) for query '%s'", pageNr, optimalPageSize, opts.Query)
+		apiLogger.Info("SearchAll: Fetching page %d (fixed page size: %d) for query '%s'", pageNr, maxResultsPerPage, opts.Query)
 
 		pageResult, err := api.Search(pageOpts)
 		if err != nil {
@@ -326,6 +322,12 @@ func (api *EasynewsAPI) SearchAll(opts SearchOptions) (EasynewsSearchResponse, e
 				allData = allData[:totalMaxResults]
 			}
 			apiLogger.Info("SearchAll: Reached max requested results limit (%d), stopping pagination.", totalMaxResults)
+			break
+		}
+
+		// If we fetched fewer items than the constant page size, Solr has no more matching items
+		if len(newData) < maxResultsPerPage {
+			apiLogger.Info("SearchAll: Fetched %d items (less than page size %d), ending pagination.", len(newData), maxResultsPerPage)
 			break
 		}
 
