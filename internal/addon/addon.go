@@ -4,7 +4,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net/url"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -202,7 +201,8 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 		config.MaxFileSize,
 	)
 
-	if cached, ok := getFromRequestCache(key); ok {
+	// Fixed undefined: key typo by utilizing cacheKey
+	if cached, ok := getFromRequestCache(cacheKey); ok {
 		return cached, nil
 	}
 
@@ -796,7 +796,7 @@ func MapStream(duration, size, fullResolution, title, fileExtension string, vide
 	}
 
 	// Statically formatted emoji literal characters to ensure safe cross-platform UTF-8 compilation
-	description := fmt.Sprintf("%s%s\n🕛 %s\n📦 %s %s\n%s",
+	description := fmt.Sprintf("%s%s\n晾 %s\n📦 %s %s\n%s",
 		title, fileExtension,
 		coalesce(duration, "unknown duration"),
 		coalesce(size, "unknown size"),
