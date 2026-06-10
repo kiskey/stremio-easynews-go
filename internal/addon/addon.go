@@ -19,6 +19,11 @@ import (
 
 var addonLogger = shared.CreateLogger("Addon", "")
 
+// Helper to determine if a title contains multiple words (preventing stop-word/index explosions)
+func isMultiWord(title string) bool {
+	return len(strings.Fields(title)) > 1
+}
+
 // ---------------------------------------------------------------------------
 // Addon Configuration
 // ---------------------------------------------------------------------------
@@ -302,12 +307,26 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 		return queries
 	}
 
-	noYearQueries := buildQueries(false)
+	var noYearQueries []string
 	var yearQueries []string
-	
-	// Bypass redundant series year fallback searches as SxxExx is completely distinct and non-year gated [1]
-	if meta.Year > 0 && contentType == "movie" {
-		yearQueries = buildQueries(true)
+
+	if contentType == "movie" {
+		if meta.Year > 0 {
+			if isMultiWord(meta.Name) {
+				// Multi-word movie: safe to search both with and without year
+				noYearQueries = buildQueries(false)
+				yearQueries = buildQueries(true)
+			} else {
+				// Single-word movie: ONLY search with year to prevent Solr index explosion! [1.1]
+				yearQueries = buildQueries(true)
+			}
+		} else {
+			// No year known: must search without year
+			noYearQueries = buildQueries(false)
+		}
+	} else if contentType == "series" {
+		// Series search (uses standard non-year SxxExx)
+		noYearQueries = buildQueries(false)
 	}
 
 	searchConcurrency := shared.ParseIntEnv("SEARCH_CONCURRENCY", 5)
@@ -383,10 +402,12 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 		return nil
 	}
 
-	// Phase 1: Search no-year queries first
-	if err := runSearchPhase(noYearQueries); err != nil {
-		addonLogger.Error("Easynews API search failed with authorization/connection error: %v", err)
-		return authErrorStream(config.UILanguage), nil
+	// Phase 1: Search no-year queries first (if defined)
+	if len(noYearQueries) > 0 {
+		if err := runSearchPhase(noYearQueries); err != nil {
+			addonLogger.Error("Easynews API search failed with authorization/connection error: %v", err)
+			return authErrorStream(config.UILanguage), nil
+		}
 	}
 
 	// Phase 2: If we are still below the total max results threshold, query with years (movies only)
@@ -395,6 +416,29 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 		if err := runSearchPhase(yearQueries); err != nil {
 			addonLogger.Error("Easynews API search (year fallback) failed: %v", err)
 			return authErrorStream(config.UILanguage), nil
+		}
+	}
+
+	// Phase 3 Fallback: If results are extremely low (e.g. < 5) and the series title is multi-word,
+	// we perform a broad, title-only search to let our Go addon's MatchesTitle filter
+	// catch non-standard episode filename releases (especially useful when strict matching is off) [1]
+	if contentType == "series" && totalFoundResults < 5 && isMultiWord(meta.Name) {
+		addonLogger.Info("Low results (%d) for multi-word series '%s'. Running title-only fallback search...", totalFoundResults, meta.Name)
+		
+		var titleFallbackQueries []string
+		for _, titleVariant := range allTitles {
+			if strings.TrimSpace(titleVariant) == "" || !isMultiWord(titleVariant) {
+				continue
+			}
+			// Build query with just the title (no season/episode) using movie config template
+			m := MetaProviderResponse{Name: titleVariant}
+			titleFallbackQueries = append(titleFallbackQueries, BuildSearchQuery("movie", m))
+		}
+		
+		if len(titleFallbackQueries) > 0 {
+			if err := runSearchPhase(titleFallbackQueries); err != nil {
+				addonLogger.Error("Easynews API search (title-only fallback) failed: %v", err)
+			}
 		}
 	}
 
