@@ -1,7 +1,7 @@
 # ===========================================================================
-# Stage 1: Dynamic Compilation Builder
+# Stage 1: Dynamic Compilation Builder (Upgraded to Go 1.25 for toolchain compliance)
 # ===========================================================================
-FROM golang:1.23-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 # Install certs for secure connections to metadata APIs
 RUN apk --no-cache add ca-certificates
