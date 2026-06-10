@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"hash/fnv"
 	"io"
@@ -26,6 +27,8 @@ var sharedTransport = &http.Transport{
 	MaxIdleConns:        100,
 	MaxIdleConnsPerHost: 100,
 	IdleConnTimeout:     90 * time.Second,
+	// Force HTTP/1.1 to match Node's node-fetch behavior and bypass unoptimized HTTP/2 upstream proxies
+	TLSNextProto:        make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
 }
 
 // ---------------------------------------------------------------------------
@@ -221,8 +224,8 @@ func (api *EasynewsAPI) Search(opts SearchOptions) (EasynewsSearchResponse, erro
 	}
 	req.Header.Set("Authorization", CreateBasic(api.username, api.password))
 	
-	// Set premium User-Agent to prevent WAF blocks
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	// Set basic API client User-Agent to bypass browser-targeted WAF verification delays
+	req.Header.Set("User-Agent", "Go-http-client/1.1")
 
 	resp, err := api.client.Do(req)
 	if err != nil {
