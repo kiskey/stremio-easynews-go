@@ -1,10 +1,24 @@
 package shared
 
-// Version is set at build time via compiler ldflags.
-// Injected at compile time using -ldflags "-X github.com/kiskey/stremio-easynews-go/internal/shared.Version=2.8.2"
-var Version = "2.8.2"
+import (
+	"regexp"
+	"strings"
+)
 
-// GetVersion returns the current version of the application.
+// Version is set at build time via compiler ldflags.
+var Version = "2.8.5"
+
+// Precompiled regex matching standard SemVer pattern (starts with a digit, followed by dot-separated digits)
+var semverRe = regexp.MustCompile(`^\d+\.\d+\.\d+`)
+
+// GetVersion returns the compiled application version.
+// Stremio strictly rejects manifests that do not match the Semantic Versioning spec (e.g. "prod", "dev", or hex hashes).
+// This accessor automatically sanitizes the string, strips leading 'v' prefixes,
+// and falls back safely to the hardcoded "2.8.5" SemVer if the build-injected string is malformed.
 func GetVersion() string {
-	return Version
+	v := strings.TrimPrefix(Version, "v")
+	if semverRe.MatchString(v) {
+		return v
+	}
+	return "2.8.5" // Ultimate fallback safety boundary
 }
