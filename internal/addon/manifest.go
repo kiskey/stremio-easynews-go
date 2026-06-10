@@ -106,7 +106,21 @@ func BuildManifest() Manifest {
 				Key:     "strictTitleMatching",
 				Type:    "checkbox",
 				Default: "true",
-				Hint:    t.Form.StrictTitleMatchingHint,
+			},
+			{
+				Title:   "Enable Alternative Titles",
+				Key:     "enableAltTitles",
+				Type:    "checkbox",
+				Default: "true",
+				Hint:    "Dynamically fetch alternative titles from TMDB API to enhance discovery",
+			},
+			{
+				Title:   "Alternate Title Target Country",
+				Key:     "altTitleCountry",
+				Type:    "select",
+				Options: altTitleCountryOptions(),
+				Default: "",
+				Hint:    "Filter alternative titles to only allow English and the chosen country (e.g. romanized Korean titles)",
 			},
 			{
 				Title:   t.Form.PreferredLanguage,
@@ -147,8 +161,25 @@ func BuildManifest() Manifest {
 	}
 }
 
+func altTitleCountryOptions() map[string]string {
+	m := make(map[string]string, 15)
+	m[""] = "English Countries Only (US/GB/CA)"
+	m["all"] = "All Latin-based Countries"
+	m["KR"] = "South Korea (KR)"
+	m["JP"] = "Japan (JP)"
+	m["FR"] = "France (FR)"
+	m["DE"] = "Germany (DE)"
+	m["ES"] = "Spain (ES)"
+	m["IT"] = "Italy (IT)"
+	m["BR"] = "Brazil (BR)"
+	m["MX"] = "Mexico (MX)"
+	m["CN"] = "China (CN)"
+	m["HK"] = "Hong Kong (HK)"
+	m["TW"] = "Taiwan (TW)"
+	return m
+}
+
 func sortingOptionsMap(t i18n.TranslationKeys) map[string]string {
-	// Pre-allocated map size to prevent resizing dynamic allocations
 	m := make(map[string]string, 4)
 	m["quality_first"] = t.SortingOptions.QualityFirst
 	m["language_first"] = t.SortingOptions.LanguageFirst
@@ -158,7 +189,6 @@ func sortingOptionsMap(t i18n.TranslationKeys) map[string]string {
 }
 
 func qualityOptionsMap(t i18n.TranslationKeys) map[string]string {
-	// Pre-allocated map size to prevent resizing dynamic allocations
 	m := make(map[string]string, 10)
 	m["4k,1080p,720p,480p"] = t.QualityOptions.AllQualities
 	m["4k"] = "4K/UHD/2160p"
