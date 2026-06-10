@@ -26,10 +26,7 @@ var (
 	separatorsRe      = regexp.MustCompile(`[\.\-_:\s]+`)
 	bracketsRe        = regexp.MustCompile(`[\[\]\(\){}]`)
 	nonAlphanumericRe = regexp.MustCompile(`[^\w\s\x{00C0}-\x{00FF}]`)
-	
-	// Optimized: Supports standard SxxExx, unpadded SxEx, and legacy xx multiplier formats natively
 	seasonEpisodeRe   = regexp.MustCompile(`(?i)(s\d+e\d+|\b\d+x\d+\b)`)
-	
 	yearPatternRe     = regexp.MustCompile(`\b(19\d{2}|20\d{2})\b`)
 	fourDigitYearRe   = regexp.MustCompile(`\b(\d{4})\b`)
 	digitsOnlyRe      = regexp.MustCompile(`\d+`)
@@ -52,11 +49,6 @@ var (
 		{regexp.MustCompile(`(?i)\bweb-?dl\b`), "WEB-DL"},
 	}
 )
-
-// Helper to determine if a title contains multiple words (preventing stop-word/index explosions)
-func isMultiWord(title string) bool {
-	return len(strings.Fields(title)) > 1
-}
 
 // ParseNameSafe wraps tnp.ParseName in a recover block to prevent unmaintained third-party library crashes
 func ParseNameSafe(title string) (parsed tnp.Torrent, err error) {
@@ -389,24 +381,18 @@ func GetQuality(title string, fallbackResolution string) string {
 }
 
 // ---------------------------------------------------------------------------
-// Highly Selective Solr Query Builders (Grouping Parentheses & Double Quoted) [1.1.1]
+// Clean, Standard Solr Query Builders (100% Strict Node.js Parity) [1]
 // ---------------------------------------------------------------------------
 
 func BuildSearchQuery(contentType string, meta MetaProviderResponse) string {
 	exclusions := " !sample !trailer !passwd !password !preview"
 
-	// Force exact phrase matching by wrapping multi-word names in double quotes to prevent colons (:) and special characters from triggering Solr field-parsing latency [1.1.1, 10]
-	queryName := meta.Name
-	if isMultiWord(meta.Name) {
-		queryName = fmt.Sprintf("\"%s\"", meta.Name)
-	}
-
 	switch contentType {
 	case "movie":
 		if meta.Year > 0 {
-			return fmt.Sprintf("%s %d%s", queryName, meta.Year, exclusions)
+			return fmt.Sprintf("%s %d%s", meta.Name, meta.Year, exclusions)
 		}
-		return queryName + exclusions
+		return meta.Name + exclusions
 
 	case "series":
 		if meta.Episode != "" && meta.Season != "" {
@@ -414,13 +400,13 @@ func BuildSearchQuery(contentType string, meta MetaProviderResponse) string {
 			eNum, _ := strconv.Atoi(meta.Episode)
 
 			if sNum > 0 && eNum > 0 {
-				return fmt.Sprintf("%s S%02dE%02d%s", queryName, sNum, eNum, exclusions)
+				return fmt.Sprintf("%s S%02dE%02d%s", meta.Name, sNum, eNum, exclusions)
 			}
 		}
-		return queryName + exclusions
+		return meta.Name + exclusions
 
 	default:
-		return queryName + exclusions
+		return meta.Name + exclusions
 	}
 }
 
