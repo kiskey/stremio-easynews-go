@@ -106,10 +106,12 @@ func (c *BoundedCache[K, V]) Set(key K, value V) {
 var (
 	imdbToTMDBIDCache    = NewBoundedCache[string, tmdbIDMapping](2000, 48*time.Hour)
 	tmdbAltTitlesCache   = NewBoundedCache[string, []string](2000, 24*time.Hour)
+	metaResponseCache    = NewBoundedCache[string, MetaProviderResponse](2000, 24*time.Hour)
 	
 	// Singleflight Groups (Locks parallel, duplicate queries into a single execution)
 	tmdbIDSingleflight    singleflight.Group
 	altTitlesSingleflight singleflight.Group
+	metaSingleflight      singleflight.Group
 )
 
 // ---------------------------------------------------------------------------
@@ -711,21 +713,47 @@ func cinemetaMetaProvider(id, contentType, preferredLanguage string, enableAltTi
 }
 
 // ---------------------------------------------------------------------------
-// Public Metadata Gateway Interface
+// Public Metadata Gateway Interface (Coalesced and Cached)
 // ---------------------------------------------------------------------------
 
 func PublicMetaProvider(id, contentType, preferredLanguage string, enableAltTitles bool, altTitleCountry string) (MetaProviderResponse, error) {
-	meta, err := imdbMetaProvider(id, preferredLanguage, enableAltTitles, altTitleCountry)
-	if err == nil && meta.Name != "" {
-		return meta, nil
+	// Create an isolated composite cache key
+	cacheKey := fmt.Sprintf("%s:%s:%s:%t:%s", id, contentType, preferredLanguage, enableAltTitles, altTitleCountry)
+	
+	// Read-Lock Check
+	if cached, ok := metaResponseCache.Get(cacheKey); ok {
+		metaLogger.Info("Meta Cache HIT for key '%s'", id)
+		return cached, nil
 	}
 
-	metaLogger.Debug("IMDb metadata lookup failed, falling back to Cinemeta: %v", err)
+	// Singleflight Coalesced Execution (Ensures only 1 network fetch runs concurrently per unique ID)
+	res, err, _ := metaSingleflight.Do(cacheKey, func() (interface{}, error) {
+		// Double-Checked Locking Check
+		if cached, ok := metaResponseCache.Get(cacheKey); ok {
+			return cached, nil
+		}
 
-	meta, err = cinemetaMetaProvider(id, contentType, preferredLanguage, enableAltTitles, altTitleCountry)
-	if err == nil && meta.Name != "" {
-		return meta, nil
+		metaLogger.Info("Meta Cache MISS: Resolving fresh metadata for key '%s'", id)
+		
+		meta, err := imdbMetaProvider(id, preferredLanguage, enableAltTitles, altTitleCountry)
+		if err == nil && meta.Name != "" {
+			metaResponseCache.Set(cacheKey, meta)
+			return meta, nil
+		}
+
+		metaLogger.Debug("IMDb metadata lookup failed, falling back to Cinemeta: %v", err)
+
+		meta, err = cinemetaMetaProvider(id, contentType, preferredLanguage, enableAltTitles, altTitleCountry)
+		if err == nil && meta.Name != "" {
+			metaResponseCache.Set(cacheKey, meta)
+			return meta, nil
+		}
+
+		return MetaProviderResponse{}, fmt.Errorf("failed to find metadata for %s", id)
+	})
+
+	if err != nil {
+		return MetaProviderResponse{}, err
 	}
-
-	return MetaProviderResponse{}, fmt.Errorf("failed to find metadata for %s", id)
+	return res.(MetaProviderResponse), nil
 }
