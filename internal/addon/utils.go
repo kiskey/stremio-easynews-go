@@ -26,7 +26,10 @@ var (
 	separatorsRe      = regexp.MustCompile(`[\.\-_:\s]+`)
 	bracketsRe        = regexp.MustCompile(`[\[\]\(\){}]`)
 	nonAlphanumericRe = regexp.MustCompile(`[^\w\s\x{00C0}-\x{00FF}]`)
+	
+	// Optimized: Supports standard SxxExx, unpadded SxEx, and legacy xx multiplier formats natively
 	seasonEpisodeRe   = regexp.MustCompile(`(?i)(s\d+e\d+|\b\d+x\d+\b)`)
+	
 	yearPatternRe     = regexp.MustCompile(`\b(19\d{2}|20\d{2})\b`)
 	fourDigitYearRe   = regexp.MustCompile(`\b(\d{4})\b`)
 	digitsOnlyRe      = regexp.MustCompile(`\d+`)
@@ -49,6 +52,11 @@ var (
 		{regexp.MustCompile(`(?i)\bweb-?dl\b`), "WEB-DL"},
 	}
 )
+
+// Helper to determine if a title contains multiple words (preventing stop-word/index explosions)
+func isMultiWord(title string) bool {
+	return len(strings.Fields(title)) > 1
+}
 
 // ParseNameSafe wraps tnp.ParseName in a recover block to prevent unmaintained third-party library crashes
 func ParseNameSafe(title string) (parsed tnp.Torrent, err error) {
