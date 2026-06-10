@@ -197,11 +197,14 @@ func (api *EasynewsAPI) Search(opts SearchOptions) (EasynewsSearchResponse, erro
 	q.Set("sb", "1")
 	q.Set("fex", "m4v,3gp,mov,divx,xvid,wmv,avi,mpg,mpeg,mp4,mkv,avc,flv,webm")
 	q.Set("fty[]", "VIDEO")
-	q.Set("spamf", "1")
-	q.Set("u", "1")
-	q.Set("gx", "1")
-	q.Set("pno", strconv.Itoa(opts.PageNr))
-	q.Set("sS", "3") // Search Scope: 3 = Subject + Filename (Node.js reference parity)
+	
+	// Server-Side Spam & Set Collapsing Optimization Parameters [2, 8]
+	q.Set("spamf", "1")                     // Native Spam Filter [2]
+	q.Set("u", "1")                         // Collapse Sets (Auto-UnRAR grouping) [2, 8]
+	q.Set("gx", "1")                        // Group Collapse (Merge duplicate newsgroups) [2]
+	q.Set("pno", strconv.Itoa(opts.PageNr)) // Pagination Page Number
+	q.Set("sS", "3")                        // Search Scope: Subject + Filename (Deep archive inspection) [2]
+	
 	q.Set("s1", opts.Sort1)
 	q.Set("s1d", opts.Sort1Direction)
 	q.Set("s2", opts.Sort2)
