@@ -328,7 +328,6 @@ func CreateStreamPath(file api.FileData) string {
 func GetQuality(title string, fallbackResolution string) string {
 	parsed, err := tnp.ParseName(title)
 	if err == nil && parsed.Resolution != "" {
-		// Explicit type casting of parsed.Resolution (torrentparser.Resolution) to string
 		resStr := string(parsed.Resolution)
 		if resStr == "2160p" || strings.Contains(resStr, "4k") {
 			return "4K"
@@ -350,34 +349,44 @@ func GetQuality(title string, fallbackResolution string) string {
 }
 
 // ---------------------------------------------------------------------------
-// Search Query Builders
+// Advanced, Or-Fanned Solr Query Builders (Sonarr / Scene compliant)
 // ---------------------------------------------------------------------------
 
-type MetaProviderResponse struct {
-	Name             string
-	OriginalName     string
-	AlternativeNames []string
-	Year             int
-	Season           string
-	Episode          string
-}
-
 func BuildSearchQuery(contentType string, meta MetaProviderResponse) string {
+	// Exclude standard trailer, sample, and password-protected spam files directly at the Solr level
+	exclusions := " !sample !trailer !passwd !password !preview"
+
 	switch contentType {
 	case "movie":
+		baseQuery := meta.Name
 		if meta.Year > 0 {
-			return fmt.Sprintf("%s %d", meta.Name, meta.Year)
+			return fmt.Sprintf("%s %d%s", baseQuery, meta.Year, exclusions)
 		}
-		return meta.Name
+		return baseQuery + exclusions
+
 	case "series":
 		if meta.Episode != "" && meta.Season != "" {
-			seasonNum, _ := strconv.Atoi(meta.Season)
-			episodeNum, _ := strconv.Atoi(meta.Episode)
-			return fmt.Sprintf("%s S%02dE%02d", meta.Name, seasonNum, episodeNum)
+			sNum, _ := strconv.Atoi(meta.Season)
+			eNum, _ := strconv.Atoi(meta.Episode)
+
+			if sNum > 0 && eNum > 0 {
+				// 1. Generate all highly-common Scene/P2P naming variations
+				v1 := fmt.Sprintf("S%02dE%02d", sNum, eNum) // e.g. S01E05
+				v2 := fmt.Sprintf("%dx%02d", sNum, eNum)   // e.g. 1x05
+				v3 := fmt.Sprintf("%d%02d", sNum, eNum)    // e.g. 105
+				v4 := fmt.Sprintf("S%dE%d", sNum, eNum)     // e.g. S1E5
+
+				// 2. Consolidate into a single high-efficiency search string using the Solr pipe '|' operator
+				episodeOrPipe := fmt.Sprintf("%s|%s|%s|%s", v1, v2, v3, v4)
+
+				// 3. Return the smart Solr query (e.g., "From S01E05|1x05|105|S1E5 !sample !trailer...")
+				return fmt.Sprintf("%s %s%s", meta.Name, episodeOrPipe, exclusions)
+			}
 		}
-		return meta.Name
+		return meta.Name + exclusions
+
 	default:
-		return meta.Name
+		return meta.Name + exclusions
 	}
 }
 
