@@ -717,23 +717,38 @@ func cinemetaMetaProvider(id, contentType, preferredLanguage string, enableAltTi
 // ---------------------------------------------------------------------------
 
 func PublicMetaProvider(id, contentType, preferredLanguage string, enableAltTitles bool, altTitleCountry string) (MetaProviderResponse, error) {
-	// Create an isolated composite cache key
-	cacheKey := fmt.Sprintf("%s:%s:%s:%t:%s", id, contentType, preferredLanguage, enableAltTitles, altTitleCountry)
+	parts := strings.Split(id, ":")
+	tt := parts[0]
+	
+	// Create an isolated composite cache key utilizing the core show-level ID 'tt' rather than full episode string [1.1]
+	cacheKey := fmt.Sprintf("%s:%s:%s:%t:%s", tt, contentType, preferredLanguage, enableAltTitles, altTitleCountry)
 	
 	// Read-Lock Check
 	if cached, ok := metaResponseCache.Get(cacheKey); ok {
-		metaLogger.Info("Meta Cache HIT for key '%s'", id)
+		metaLogger.Info("Meta Cache HIT for core key '%s'", tt)
+		
+		// Dynamic injection: Inject the current request's specific Season & Episode into the cached show-level metadata [1.1, 1.2]
+		var season, episode string
+		if len(parts) > 1 {
+			season = parts[1]
+		}
+		if len(parts) > 2 {
+			episode = parts[2]
+		}
+		cached.Season = season
+		cached.Episode = episode
+		
 		return cached, nil
 	}
 
-	// Singleflight Coalesced Execution (Ensures only 1 network fetch runs concurrently per unique ID)
+	// Singleflight Coalesced Execution (Ensures only 1 network fetch runs concurrently per unique core ID)
 	res, err, _ := metaSingleflight.Do(cacheKey, func() (interface{}, error) {
 		// Double-Checked Locking Check
 		if cached, ok := metaResponseCache.Get(cacheKey); ok {
 			return cached, nil
 		}
 
-		metaLogger.Info("Meta Cache MISS: Resolving fresh metadata for key '%s'", id)
+		metaLogger.Info("Meta Cache MISS: Resolving fresh metadata for core key '%s'", tt)
 		
 		meta, err := imdbMetaProvider(id, preferredLanguage, enableAltTitles, altTitleCountry)
 		if err == nil && meta.Name != "" {
@@ -755,5 +770,18 @@ func PublicMetaProvider(id, contentType, preferredLanguage string, enableAltTitl
 	if err != nil {
 		return MetaProviderResponse{}, err
 	}
-	return res.(MetaProviderResponse), nil
+	
+	// Format dynamic return mapping
+	finalMeta := res.(MetaProviderResponse)
+	var season, episode string
+	if len(parts) > 1 {
+		season = parts[1]
+	}
+	if len(parts) > 2 {
+		episode = parts[2]
+	}
+	finalMeta.Season = season
+	finalMeta.Episode = episode
+	
+	return finalMeta, nil
 }
