@@ -384,24 +384,18 @@ func GetQuality(title string, fallbackResolution string) string {
 }
 
 // ---------------------------------------------------------------------------
-// Highly Selective Solr Query Builders (Grouping Parentheses & Double Quoted) [1.1.1]
+// Clean, Standard Solr Query Builders (100% Strict Node.js Parity)
 // ---------------------------------------------------------------------------
 
 func BuildSearchQuery(contentType string, meta MetaProviderResponse) string {
 	exclusions := " !sample !trailer !passwd !password !preview"
 
-	// Force exact phrase matching by wrapping multi-word names in double quotes to prevent un-gated Solr searches [1.1.1]
-	queryName := meta.Name
-	if isMultiWord(meta.Name) {
-		queryName = fmt.Sprintf("\"%s\"", meta.Name)
-	}
-
 	switch contentType {
 	case "movie":
 		if meta.Year > 0 {
-			return fmt.Sprintf("%s %d%s", queryName, meta.Year, exclusions)
+			return fmt.Sprintf("%s %d%s", meta.Name, meta.Year, exclusions)
 		}
-		return queryName + exclusions
+		return meta.Name + exclusions
 
 	case "series":
 		if meta.Episode != "" && meta.Season != "" {
@@ -409,20 +403,13 @@ func BuildSearchQuery(contentType string, meta MetaProviderResponse) string {
 			eNum, _ := strconv.Atoi(meta.Episode)
 
 			if sNum > 0 && eNum > 0 {
-				// Generate safe, index-accelerated alternative patterns [1]
-				v1 := fmt.Sprintf("S%02dE%02d", sNum, eNum) // S02E01 (Standard padded)
-				v2 := fmt.Sprintf("S%dE%d", sNum, eNum)     // S2E1 (Unpadded)
-				v3 := fmt.Sprintf("%dx%02d", sNum, eNum)    // 2x01 (Legacy multiplier)
-
-				// Safely bound the OR pipe inside grouping parentheses to prevent global query parser explosion! [1.1.1]
-				episodeOrPipe := fmt.Sprintf("(%s|%s|%s)", v1, v2, v3)
-				return fmt.Sprintf("%s %s%s", queryName, episodeOrPipe, exclusions)
+				return fmt.Sprintf("%s S%02dE%02d%s", meta.Name, sNum, eNum, exclusions)
 			}
 		}
-		return queryName + exclusions
+		return meta.Name + exclusions
 
 	default:
-		return queryName + exclusions
+		return meta.Name + exclusions
 	}
 }
 
