@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"net/http"
 	"net/url"
@@ -317,7 +318,6 @@ func (api *EasynewsAPI) SearchAll(opts SearchOptions) (EasynewsSearchResponse, e
 
 		allData = append(allData, newData...)
 		
-		// Render continuous progress logs to keep the operator informed of the search progress
 		percent := (len(allData) * 100) / totalMaxResults
 		apiLogger.Info("SearchAll: Progress - %d/%d unique files indexed (%d%%)", len(allData), totalMaxResults, percent)
 
