@@ -19,11 +19,6 @@ import (
 
 var addonLogger = shared.CreateLogger("Addon", "")
 
-// Helper to determine if a title contains multiple words (preventing stop-word/index explosions)
-func isMultiWord(title string) bool {
-	return len(strings.Fields(title)) > 1
-}
-
 // ---------------------------------------------------------------------------
 // Addon Configuration
 // ---------------------------------------------------------------------------
