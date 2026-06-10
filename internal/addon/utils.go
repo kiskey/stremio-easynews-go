@@ -384,18 +384,24 @@ func GetQuality(title string, fallbackResolution string) string {
 }
 
 // ---------------------------------------------------------------------------
-// Highly Selective Solr Query Builders (Grouping Parentheses Optimized) [1.1.1]
+// Highly Selective Solr Query Builders (Grouping Parentheses & Double Quoted) [1.1.1]
 // ---------------------------------------------------------------------------
 
 func BuildSearchQuery(contentType string, meta MetaProviderResponse) string {
 	exclusions := " !sample !trailer !passwd !password !preview"
 
+	// Force exact phrase matching by wrapping multi-word names in double quotes to prevent un-gated Solr searches [1.1.1]
+	queryName := meta.Name
+	if isMultiWord(meta.Name) {
+		queryName = fmt.Sprintf("\"%s\"", meta.Name)
+	}
+
 	switch contentType {
 	case "movie":
 		if meta.Year > 0 {
-			return fmt.Sprintf("%s %d%s", meta.Name, meta.Year, exclusions)
+			return fmt.Sprintf("%s %d%s", queryName, meta.Year, exclusions)
 		}
-		return meta.Name + exclusions
+		return queryName + exclusions
 
 	case "series":
 		if meta.Episode != "" && meta.Season != "" {
@@ -410,13 +416,13 @@ func BuildSearchQuery(contentType string, meta MetaProviderResponse) string {
 
 				// Safely bound the OR pipe inside grouping parentheses to prevent global query parser explosion! [1.1.1]
 				episodeOrPipe := fmt.Sprintf("(%s|%s|%s)", v1, v2, v3)
-				return fmt.Sprintf("%s %s%s", meta.Name, episodeOrPipe, exclusions)
+				return fmt.Sprintf("%s %s%s", queryName, episodeOrPipe, exclusions)
 			}
 		}
-		return meta.Name + exclusions
+		return queryName + exclusions
 
 	default:
-		return meta.Name + exclusions
+		return queryName + exclusions
 	}
 }
 
