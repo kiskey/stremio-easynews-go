@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"embed"
 	"html/template"
-	"strings"
 	"time"
 
 	"github.com/kiskey/stremio-easynews-go/internal/i18n"
