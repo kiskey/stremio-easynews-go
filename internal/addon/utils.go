@@ -366,16 +366,18 @@ func GetQuality(title string, fallbackResolution string) string {
 }
 
 // ---------------------------------------------------------------------------
-// Standard Specific Solr Query Builders (Parity aligned with Node.js)
+// Highly Selective Solr Query Builders (Spam-prefiltered via official negate operators)
 // ---------------------------------------------------------------------------
 
 func BuildSearchQuery(contentType string, meta MetaProviderResponse) string {
+	exclusions := " !sample !trailer !passwd !password !preview"
+
 	switch contentType {
 	case "movie":
 		if meta.Year > 0 {
-			return fmt.Sprintf("%s %d", meta.Name, meta.Year)
+			return fmt.Sprintf("%s %d%s", meta.Name, meta.Year, exclusions)
 		}
-		return meta.Name
+		return meta.Name + exclusions
 
 	case "series":
 		if meta.Episode != "" && meta.Season != "" {
@@ -383,13 +385,13 @@ func BuildSearchQuery(contentType string, meta MetaProviderResponse) string {
 			eNum, _ := strconv.Atoi(meta.Episode)
 
 			if sNum > 0 && eNum > 0 {
-				return fmt.Sprintf("%s S%02dE%02d", meta.Name, sNum, eNum)
+				return fmt.Sprintf("%s S%02dE%02d%s", meta.Name, sNum, eNum, exclusions)
 			}
 		}
-		return meta.Name
+		return meta.Name + exclusions
 
 	default:
-		return meta.Name
+		return meta.Name + exclusions
 	}
 }
 
