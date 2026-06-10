@@ -328,10 +328,12 @@ func CreateStreamPath(file api.FileData) string {
 func GetQuality(title string, fallbackResolution string) string {
 	parsed, err := tnp.ParseName(title)
 	if err == nil && parsed.Resolution != "" {
-		if parsed.Resolution == "2160p" || strings.Contains(parsed.Resolution, "4k") {
+		// Explicit type casting of parsed.Resolution (torrentparser.Resolution) to string
+		resStr := string(parsed.Resolution)
+		if resStr == "2160p" || strings.Contains(resStr, "4k") {
 			return "4K"
 		}
-		return parsed.Resolution
+		return resStr
 	}
 
 	lowerTitle := strings.ToLower(title)
