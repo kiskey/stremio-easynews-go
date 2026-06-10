@@ -157,6 +157,8 @@ func resolveTMDBID(imdbID string) (int, bool, error) {
 			return val, nil
 		}
 
+		metaLogger.Info("TMDB: Resolving TMDB ID from IMDb ID '%s'...", imdbID)
+
 		ctx, cancel := context.WithTimeout(context.Background(), metaFetchTimeout)
 		defer cancel()
 
@@ -168,6 +170,7 @@ func resolveTMDBID(imdbID string) (int, bool, error) {
 
 		resp, err := fetchWithRetry(ctx, http.DefaultClient, req)
 		if err != nil {
+			metaLogger.Error("TMDB: Request failed to find TMDB mapping for IMDb ID '%s': %v", imdbID, err)
 			return tmdbIDMapping{}, err
 		}
 		defer func() {
@@ -177,9 +180,11 @@ func resolveTMDBID(imdbID string) (int, bool, error) {
 
 		if resp.StatusCode == 401 {
 			useTMDB = false
+			metaLogger.Error("TMDB: Invalid API Key provided. Disabling TMDB translations globally.")
 			return tmdbIDMapping{}, fmt.Errorf("TMDB API key invalid")
 		}
 		if resp.StatusCode != 200 {
+			metaLogger.Error("TMDB: Upstream find returned status code: %d for IMDb ID '%s'", resp.StatusCode, imdbID)
 			return tmdbIDMapping{}, fmt.Errorf("TMDB find error: %d", resp.StatusCode)
 		}
 
@@ -198,6 +203,7 @@ func resolveTMDBID(imdbID string) (int, bool, error) {
 		isMovie := len(findData.MovieResults) > 0
 		isTV := len(findData.TVResults) > 0
 		if !isMovie && !isTV {
+			metaLogger.Info("TMDB: No TMDB ID mapping found on find endpoint for IMDb ID '%s'", imdbID)
 			return tmdbIDMapping{}, nil
 		}
 
@@ -210,6 +216,7 @@ func resolveTMDBID(imdbID string) (int, bool, error) {
 
 		mapping := tmdbIDMapping{id: tmdbID, isMovie: isMovie}
 		imdbToTMDBIDCache.Set(imdbID, mapping)
+		metaLogger.Info("TMDB: Successfully resolved IMDb ID '%s' to TMDB ID %d (isMovie: %v)", imdbID, tmdbID, isMovie)
 		return mapping, nil
 	})
 
@@ -238,6 +245,8 @@ func getTMDBAlternativeTitles(imdbID string) ([]string, error) {
 			return cached, nil
 		}
 
+		metaLogger.Info("TMDB: Fetching alternative titles for IMDb ID '%s'...", imdbID)
+
 		tmdbID, isMovie, err := resolveTMDBID(imdbID)
 		if err != nil || tmdbID == 0 {
 			return nil, err
@@ -260,6 +269,7 @@ func getTMDBAlternativeTitles(imdbID string) ([]string, error) {
 
 		resp, err := fetchWithRetry(ctx, http.DefaultClient, req)
 		if err != nil {
+			metaLogger.Error("TMDB: Failed to fetch alternative titles from endpoint: %v", err)
 			return nil, err
 		}
 		defer func() {
@@ -268,6 +278,7 @@ func getTMDBAlternativeTitles(imdbID string) ([]string, error) {
 		}()
 
 		if resp.StatusCode != 200 {
+			metaLogger.Error("TMDB: Upstream alternative titles returned status code: %d", resp.StatusCode)
 			return nil, fmt.Errorf("TMDB alt titles error: %d", resp.StatusCode)
 		}
 
@@ -317,6 +328,7 @@ func getTMDBAlternativeTitles(imdbID string) ([]string, error) {
 		}
 
 		tmdbAltTitlesCache.Set(imdbID, cleanList)
+		metaLogger.Info("TMDB: Successfully resolved %d Latin alternative titles for IMDb ID '%s': %v", len(cleanList), imdbID, cleanList)
 		return cleanList, nil
 	})
 
@@ -342,6 +354,8 @@ func getTMDBTranslatedTitle(imdbID, preferredLanguage string) (string, error) {
 		return "", err
 	}
 
+	metaLogger.Info("TMDB: Fetching translated title for IMDb ID '%s' in language '%s'...", imdbID, tmdbLang)
+
 	var detailsURL string
 	if isMovie {
 		detailsURL = fmt.Sprintf("https://api.themoviedb.org/3/movie/%d?api_key=%s&language=%s", tmdbID, tmdbAPIKey, tmdbLang)
@@ -359,6 +373,7 @@ func getTMDBTranslatedTitle(imdbID, preferredLanguage string) (string, error) {
 
 	resp2, err := fetchWithRetry(ctx, http.DefaultClient, req2)
 	if err != nil {
+		metaLogger.Error("TMDB: Failed to fetch translation details: %v", err)
 		return "", err
 	}
 	defer func() {
@@ -367,6 +382,7 @@ func getTMDBTranslatedTitle(imdbID, preferredLanguage string) (string, error) {
 	}()
 
 	if resp2.StatusCode != 200 {
+		metaLogger.Error("TMDB: Upstream translation details returned status code: %d", resp2.StatusCode)
 		return "", fmt.Errorf("TMDB details error: %d", resp2.StatusCode)
 	}
 
@@ -379,9 +395,11 @@ func getTMDBTranslatedTitle(imdbID, preferredLanguage string) (string, error) {
 	}
 
 	if details.Title != "" {
+		metaLogger.Info("TMDB: Resolved translated movie title for '%s' in '%s': '%s'", imdbID, tmdbLang, details.Title)
 		return details.Title, nil
 	}
 	if details.Name != "" {
+		metaLogger.Info("TMDB: Resolved translated series name for '%s' in '%s': '%s'", imdbID, tmdbLang, details.Name)
 		return details.Name, nil
 	}
 
@@ -399,6 +417,7 @@ func getTMDBTranslatedTitle(imdbID, preferredLanguage string) (string, error) {
 
 	resp3, err := fetchWithRetry(ctx, http.DefaultClient, req3)
 	if err != nil {
+		metaLogger.Error("TMDB: Failed to fetch translation catalog: %v", err)
 		return "", err
 	}
 	defer func() {
@@ -422,14 +441,17 @@ func getTMDBTranslatedTitle(imdbID, preferredLanguage string) (string, error) {
 	for _, t := range transData.Translations {
 		if t.ISO639_1 == tmdbLang {
 			if isMovie && t.Data.Title != "" {
+				metaLogger.Info("TMDB: Resolved fallback translation title for '%s' in '%s': '%s'", imdbID, tmdbLang, t.Data.Title)
 				return t.Data.Title, nil
 			}
 			if !isMovie && t.Data.Name != "" {
+				metaLogger.Info("TMDB: Resolved fallback translation name for '%s' in '%s': '%s'", imdbID, tmdbLang, t.Data.Name)
 				return t.Data.Name, nil
 			}
 		}
 	}
 
+	metaLogger.Info("TMDB: No translation found for IMDb ID '%s' in language '%s'", imdbID, tmdbLang)
 	return "", nil
 }
 
@@ -448,6 +470,8 @@ func imdbMetaProvider(id, preferredLanguage string) (MetaProviderResponse, error
 		episode = parts[2]
 	}
 
+	metaLogger.Info("Meta: Querying IMDb Suggestions API for ID '%s'...", tt)
+
 	ctx, cancel := context.WithTimeout(context.Background(), metaFetchTimeout)
 	defer cancel()
 
@@ -459,6 +483,7 @@ func imdbMetaProvider(id, preferredLanguage string) (MetaProviderResponse, error
 
 	resp, err := fetchWithRetry(ctx, http.DefaultClient, req)
 	if err != nil {
+		metaLogger.Error("Meta: IMDb suggestion lookup failed for ID '%s': %v", tt, err)
 		return MetaProviderResponse{}, err
 	}
 	defer func() {
@@ -491,10 +516,12 @@ func imdbMetaProvider(id, preferredLanguage string) (MetaProviderResponse, error
 		}
 	}
 	if !found {
+		metaLogger.Warn("Meta: No matching IMDb suggestion record found for ID '%s'", tt)
 		return MetaProviderResponse{}, fmt.Errorf("no IMDb match for %s", tt)
 	}
 
 	originalName := item.L
+	metaLogger.Info("Meta: IMDb suggestion resolved primary title: '%s' (Year: %d)", originalName, item.Y)
 	alternatives := GetAlternativeTitles(originalName)
 
 	if useTMDB {
@@ -569,6 +596,8 @@ func cinemetaMetaProvider(id, contentType, preferredLanguage string) (MetaProvid
 		episode = parts[2]
 	}
 
+	metaLogger.Info("Meta: Querying Cinemeta API fallback for ID '%s' (type: '%s')...", tt, contentType)
+
 	ctx, cancel := context.WithTimeout(context.Background(), metaFetchTimeout)
 	defer cancel()
 
@@ -580,6 +609,7 @@ func cinemetaMetaProvider(id, contentType, preferredLanguage string) (MetaProvid
 
 	resp, err := fetchWithRetry(ctx, http.DefaultClient, req)
 	if err != nil {
+		metaLogger.Error("Meta: Cinemeta fallback lookup failed for ID '%s': %v", tt, err)
 		return MetaProviderResponse{}, err
 	}
 	defer func() {
@@ -608,6 +638,7 @@ func cinemetaMetaProvider(id, contentType, preferredLanguage string) (MetaProvid
 		yearVal = *year
 	}
 
+	metaLogger.Info("Meta: Cinemeta resolved fallback title: '%s' (Year: %d)", name, yearVal)
 	alternatives := GetAlternativeTitles(name)
 
 	if useTMDB {
