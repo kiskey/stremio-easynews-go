@@ -109,9 +109,12 @@ func ServeHTTP(port int) {
 		}
 
 		if config.Username == "" || config.Password == "" {
+			serverLogger.Info("Request rejected: missing credentials (username/password) in configuration path")
 			c.JSON(http.StatusOK, gin.H{"streams": []interface{}{}})
 			return
 		}
+
+		serverLogger.Info("Incoming stream resolution request for type=%s id=%s", contentType, id)
 
 		result, err := addon.StreamHandler(contentType, id, config)
 		if err != nil {
@@ -119,6 +122,8 @@ func ServeHTTP(port int) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to resolve streams"})
 			return
 		}
+
+		serverLogger.Info("Returned %d stream options for type=%s id=%s (cacheMaxAge=%d)", len(result.Streams), contentType, id, result.CacheMaxAge)
 
 		if result.CacheMaxAge > 0 {
 			c.Header("Cache-Control", fmt.Sprintf("max-age=%d, public", result.CacheMaxAge))
@@ -262,6 +267,7 @@ func corsMiddleware() gin.HandlerFunc {
 }
 
 // requestLogger tracks network metrics, errors, and latencies across endpoints.
+// Escalated to INFO level to guarantee observability under the default log settings.
 func requestLogger() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
@@ -272,6 +278,6 @@ func requestLogger() gin.HandlerFunc {
 		}
 		c.Next()
 		latency := time.Since(start)
-		serverLogger.Debug("%s %s | Status: %d | Latency: %v", c.Request.Method, path, c.Writer.Status(), latency)
+		serverLogger.Info("%s %s | Status: %d | Latency: %v", c.Request.Method, path, c.Writer.Status(), latency)
 	}
 }
