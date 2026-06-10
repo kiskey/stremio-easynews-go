@@ -16,6 +16,8 @@ import (
 	"github.com/kiskey/stremio-easynews-go/internal/shared"
 )
 
+var apiLogger = shared.CreateLogger("API", "")
+
 // ---------------------------------------------------------------------------
 // Shared Network Connection Pooling (Reused across dynamic API instances)
 // ---------------------------------------------------------------------------
@@ -167,12 +169,13 @@ func (api *EasynewsAPI) Search(opts SearchOptions) (EasynewsSearchResponse, erro
 		opts.MaxResults = shared.ParseIntEnv("MAX_RESULTS_PER_PAGE", 250)
 	}
 
+	// Apply default Solr sorts (RE-ALIGNED WITH THE ORIGINAL NODE.JS IMPLEMENTATION)
 	if opts.Sort1 == "" {
-		opts.Sort1 = "dsize"
+		opts.Sort1 = "relevance"
 		opts.Sort1Direction = "-"
 	}
 	if opts.Sort2 == "" {
-		opts.Sort2 = "relevance"
+		opts.Sort2 = "dsize"
 		opts.Sort2Direction = "-"
 	}
 	if opts.Sort3 == "" {
@@ -207,6 +210,8 @@ func (api *EasynewsAPI) Search(opts SearchOptions) (EasynewsSearchResponse, erro
 	q.Set("gps", opts.Query)
 	u.RawQuery = q.Encode()
 
+	apiLogger.Info("Querying Easynews advanced search: '%s' (pno: %d, pby: %d, sort1: %s)", opts.Query, opts.PageNr, opts.MaxResults, opts.Sort1)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -215,6 +220,9 @@ func (api *EasynewsAPI) Search(opts SearchOptions) (EasynewsSearchResponse, erro
 		return EasynewsSearchResponse{}, err
 	}
 	req.Header.Set("Authorization", CreateBasic(api.username, api.password))
+	
+	// Set standard browser User-Agent to bypass any network security / WAF blocking
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
 	resp, err := api.client.Do(req)
 	if err != nil {
@@ -224,15 +232,16 @@ func (api *EasynewsAPI) Search(opts SearchOptions) (EasynewsSearchResponse, erro
 		return EasynewsSearchResponse{}, err
 	}
 	defer func() {
-		// Drain body to make sure connection is available for reuse in transport pool
 		_, _ = io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 	}()
 
 	if resp.StatusCode == http.StatusUnauthorized {
+		apiLogger.Error("Easynews API request returned 401 Unauthorized for user: %s", api.username)
 		return EasynewsSearchResponse{}, fmt.Errorf("authentication failed: invalid username or password")
 	}
 	if resp.StatusCode != http.StatusOK {
+		apiLogger.Error("Easynews API request returned failed status code: %d (%s) for query: '%s'", resp.StatusCode, resp.Status, opts.Query)
 		return EasynewsSearchResponse{}, fmt.Errorf("failed to fetch search results of query '%s': %d %s", opts.Query, resp.StatusCode, resp.Status)
 	}
 
@@ -240,6 +249,8 @@ func (api *EasynewsAPI) Search(opts SearchOptions) (EasynewsSearchResponse, erro
 	if err := sonic.ConfigStd.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return EasynewsSearchResponse{}, fmt.Errorf("failed to decode response: %w", err)
 	}
+
+	apiLogger.Info("Solr search successfully returned %d files (out of %d total matched in Solr) for query '%s'", len(result.Data), result.Results, opts.Query)
 
 	api.setCache(cacheKey, result)
 	return result, nil
@@ -257,6 +268,8 @@ func (api *EasynewsAPI) SearchAll(opts SearchOptions) (EasynewsSearchResponse, e
 	pageNr := 1
 	pageCount := 0
 	var previousFirstHash string
+
+	apiLogger.Info("Executing fanned pagination searchAll for: '%s' (max results: %d, max pages: %d)", opts.Query, totalMaxResults, maxPages)
 
 	for pageCount < maxPages {
 		remaining := totalMaxResults - len(allData)
@@ -290,7 +303,6 @@ func (api *EasynewsAPI) SearchAll(opts SearchOptions) (EasynewsSearchResponse, e
 			break
 		}
 
-		// Exact duplicate protection: exit pagination loop if first item matches the previous page
 		if previousFirstHash != "" && newData[0].Zero == previousFirstHash {
 			break
 		}
