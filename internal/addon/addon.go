@@ -795,6 +795,8 @@ func MapStream(duration, size, fullResolution, title, fileExtension string, vide
 			dateMs = t.UnixMilli()
 		} else if t, err := time.Parse("2006-01-02 15:04:05", file.Five); err == nil {
 			dateMs = t.UnixMilli()
+		} else if t, err := time.Parse("01-02-2006 15:04:05", file.Five); err == nil {
+			dateMs = t.UnixMilli()
 		}
 	}
 	hasPreferredLang := preferredLang != "" && file.Alangs != nil && contains(file.Alangs, preferredLang)
