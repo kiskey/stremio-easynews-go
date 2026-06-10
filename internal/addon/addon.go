@@ -201,8 +201,8 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 		config.MaxFileSize,
 	)
 
-	// Fixed undefined: key typo by utilizing cacheKey
 	if cached, ok := getFromRequestCache(cacheKey); ok {
+		addonLogger.Info("Request Cache HIT for key ID %s (returning %d streams)", id, len(cached.Streams))
 		return cached, nil
 	}
 
@@ -236,13 +236,17 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 
 	easynewsAPI, err := api.NewEasynewsAPI(config.Username, config.Password)
 	if err != nil {
+		addonLogger.Error("EasynewsAPI instantiation failed: %v", err)
 		return authErrorStream(config.UILanguage), nil
 	}
 
 	meta, err := PublicMetaProvider(id, contentType, preferredLang)
 	if err != nil {
+		addonLogger.Error("Metadata lookup failed for ID %s (type=%s): %v", id, contentType, err)
 		return StreamHandlerResult{Streams: []Stream{}, CacheMaxAge: errorCacheMaxAge}, nil
 	}
+
+	addonLogger.Info("Initiating search for '%s' (type: %s, strict matching: %v, preferred lang: '%s')", meta.Name, contentType, useStrictMatching, preferredLang)
 
 	// Dynamic alternative titles are resolved dynamically using the TMDB API
 	allTitles := []string{meta.Name}
@@ -356,17 +360,21 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 
 	// Phase 1: Search no-year queries first
 	if err := runSearchPhase(noYearQueries); err != nil {
+		addonLogger.Error("Easynews API search failed with authorization/connection error: %v", err)
 		return authErrorStream(config.UILanguage), nil
 	}
 
 	// Phase 2: If we are still below the total max results threshold, query with years
 	if totalFoundResults < totalMaxResults && len(yearQueries) > 0 {
+		addonLogger.Info("Current results (%d) under cap (%d). Executing fallback year searches...", totalFoundResults, totalMaxResults)
 		if err := runSearchPhase(yearQueries); err != nil {
+			addonLogger.Error("Easynews API search (year fallback) failed: %v", err)
 			return authErrorStream(config.UILanguage), nil
 		}
 	}
 
 	if len(allSearchResults) == 0 {
+		addonLogger.Info("Search complete: zero results returned from Easynews Solr indices")
 		result := StreamHandlerResult{
 			Streams:     []Stream{},
 			CacheMaxAge: emptyResultCacheMaxAge,
@@ -452,6 +460,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 			)
 			if err != nil {
 				if _, isMissing := err.(*MissingBaseUrlError); isMissing {
+					addonLogger.Error("Failed to map stream: missing ADDON_BASE_URL context")
 					return configErrorStream(), nil
 				}
 				continue
@@ -472,8 +481,9 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 		}
 	}
 
-	addonLogger.Debug("Diagnostic metrics: totalFilesSeen=%d rejectedSample=%d rejectedDuplicate=%d rejectedTitle=%d matchingCount=%d",
-		totalFilesSeen, rejectedSample, rejectedDuplicate, rejectedTitle, len(streams))
+	// Metrics report upgraded to INFO level for high visibility
+	addonLogger.Info("Search complete: totalFilesSeen=%d matchingCount=%d (rejected: sample/quality=%d, duplicate=%d, titleMismatch=%d)",
+		totalFilesSeen, len(streams), rejectedSample, rejectedDuplicate, rejectedTitle)
 
 	// -----------------------------------------------------------------------
 	// Low-Latency Sorting Pipeline (With Defensive Pointer Safety checks)
@@ -796,7 +806,7 @@ func MapStream(duration, size, fullResolution, title, fileExtension string, vide
 	}
 
 	// Statically formatted emoji literal characters to ensure safe cross-platform UTF-8 compilation
-	description := fmt.Sprintf("%s%s\n晾 %s\n📦 %s %s\n%s",
+	description := fmt.Sprintf("%s%s\n🕛 %s\n📦 %s %s\n%s",
 		title, fileExtension,
 		coalesce(duration, "unknown duration"),
 		coalesce(size, "unknown size"),
