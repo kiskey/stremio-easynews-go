@@ -384,7 +384,7 @@ func GetQuality(title string, fallbackResolution string) string {
 }
 
 // ---------------------------------------------------------------------------
-// Highly Selective Solr Query Builders (Safe Fanned patterns included natively)
+// Highly Selective Solr Query Builders (Grouping Parentheses Optimized) [1.1.1]
 // ---------------------------------------------------------------------------
 
 func BuildSearchQuery(contentType string, meta MetaProviderResponse) string {
@@ -403,12 +403,13 @@ func BuildSearchQuery(contentType string, meta MetaProviderResponse) string {
 			eNum, _ := strconv.Atoi(meta.Episode)
 
 			if sNum > 0 && eNum > 0 {
-				// Generate safe, index-accelerated alternative patterns (excluding raw numbers like '102' or '810' to prevent full-table scans)
+				// Generate safe, index-accelerated alternative patterns [1]
 				v1 := fmt.Sprintf("S%02dE%02d", sNum, eNum) // S02E01 (Standard padded)
 				v2 := fmt.Sprintf("S%dE%d", sNum, eNum)     // S2E1 (Unpadded)
 				v3 := fmt.Sprintf("%dx%02d", sNum, eNum)    // 2x01 (Legacy multiplier)
 
-				episodeOrPipe := fmt.Sprintf("%s|%s|%s", v1, v2, v3)
+				// Safely bound the OR pipe inside grouping parentheses to prevent global query parser explosion! [1.1.1]
+				episodeOrPipe := fmt.Sprintf("(%s|%s|%s)", v1, v2, v3)
 				return fmt.Sprintf("%s %s%s", meta.Name, episodeOrPipe, exclusions)
 			}
 		}
