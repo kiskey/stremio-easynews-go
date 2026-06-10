@@ -355,19 +355,16 @@ func GetQuality(title string, fallbackResolution string) string {
 }
 
 // ---------------------------------------------------------------------------
-// Advanced, Or-Fanned Solr Query Builders (Sonarr / Scene compliant)
+// Standard Specific Solr Query Builders (Parity aligned with Node.js)
 // ---------------------------------------------------------------------------
 
 func BuildSearchQuery(contentType string, meta MetaProviderResponse) string {
-	exclusions := " !sample !trailer !passwd !password !preview"
-
 	switch contentType {
 	case "movie":
-		baseQuery := meta.Name
 		if meta.Year > 0 {
-			return fmt.Sprintf("%s %d%s", baseQuery, meta.Year, exclusions)
+			return fmt.Sprintf("%s %d", meta.Name, meta.Year)
 		}
-		return baseQuery + exclusions
+		return meta.Name
 
 	case "series":
 		if meta.Episode != "" && meta.Season != "" {
@@ -375,20 +372,13 @@ func BuildSearchQuery(contentType string, meta MetaProviderResponse) string {
 			eNum, _ := strconv.Atoi(meta.Episode)
 
 			if sNum > 0 && eNum > 0 {
-				v1 := fmt.Sprintf("S%02dE%02d", sNum, eNum) // S01E05
-				v2 := fmt.Sprintf("%dx%02d", sNum, eNum)   // 1x05
-				v3 := fmt.Sprintf("%d%02d", sNum, eNum)    // 105
-				v4 := fmt.Sprintf("S%dE%d", sNum, eNum)     // S1E5
-
-				episodeOrPipe := fmt.Sprintf("%s|%s|%s|%s", v1, v2, v3, v4)
-
-				return fmt.Sprintf("%s %s%s", meta.Name, episodeOrPipe, exclusions)
+				return fmt.Sprintf("%s S%02dE%02d", meta.Name, sNum, eNum)
 			}
 		}
-		return meta.Name + exclusions
+		return meta.Name
 
 	default:
-		return meta.Name + exclusions
+		return meta.Name
 	}
 }
 
