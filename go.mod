@@ -1,6 +1,6 @@
 module github.com/kiskey/stremio-easynews-go
 
-go 1.23
+go 1.25
 
 require (
 	github.com/ProfChaos/torrent-name-parser v0.5.1
