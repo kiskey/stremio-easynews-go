@@ -48,17 +48,20 @@ func ServeHTTP(port int) {
 	// Stremio Protocol Gateway Routes
 	// -----------------------------------------------------------------------
 
-	// Default unconfigured manifest endpoint
+	// Default unconfigured manifest endpoint (forces setup workflow)
 	r.GET("/manifest.json", func(c *gin.Context) {
 		m := addon.BuildManifest()
 		c.JSON(http.StatusOK, m)
 	})
 
-	// User-configured manifest endpoint
+	// User-configured manifest endpoint (disables setup requirements for direct installation)
 	r.GET("/:config/manifest.json", func(c *gin.Context) {
 		configStr := c.Param("config")
 		config := addon.ParseConfig(configStr)
 		m := addon.BuildManifest()
+
+		// Disable installation blocks because configuration is now provided in the path!
+		m.BehaviorHints.ConfigurationRequired = false
 
 		// Propagate user configuration back to defaults in Stremio UI
 		for i, field := range m.Config {
