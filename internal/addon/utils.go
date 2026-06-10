@@ -349,6 +349,17 @@ func GetQuality(title string, fallbackResolution string) string {
 	}
 
 	if fallbackResolution != "" {
+		// Defensive mapping: clean raw dimensions into standard labels to satisfy custom quality filters
+		cleanRes := strings.ReplaceAll(strings.ToLower(fallbackResolution), " ", "")
+		if strings.Contains(cleanRes, "3840x2160") || strings.Contains(cleanRes, "2160p") {
+			return "4K"
+		}
+		if strings.Contains(cleanRes, "1920x1080") || strings.Contains(cleanRes, "1080p") {
+			return "1080p"
+		}
+		if strings.Contains(cleanRes, "1280x720") || strings.Contains(cleanRes, "720p") {
+			return "720p"
+		}
 		return fallbackResolution
 	}
 	return ""
