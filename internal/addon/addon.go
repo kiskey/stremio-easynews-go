@@ -304,7 +304,9 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 
 	noYearQueries := buildQueries(false)
 	var yearQueries []string
-	if meta.Year > 0 {
+	
+	// Bypass redundant series year fallback searches as SxxExx is completely distinct and non-year gated [1]
+	if meta.Year > 0 && contentType == "movie" {
 		yearQueries = buildQueries(true)
 	}
 
@@ -387,7 +389,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 		return authErrorStream(config.UILanguage), nil
 	}
 
-	// Phase 2: If we are still below the total max results threshold, query with years
+	// Phase 2: If we are still below the total max results threshold, query with years (movies only)
 	if totalFoundResults < totalMaxResults && len(yearQueries) > 0 {
 		addonLogger.Info("Current results (%d) under cap (%d). Executing fallback year searches...", totalFoundResults, totalMaxResults)
 		if err := runSearchPhase(yearQueries); err != nil {
