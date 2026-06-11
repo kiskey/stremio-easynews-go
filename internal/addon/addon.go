@@ -486,17 +486,9 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 			processedHashes[fileHash] = struct{}{}
 
 			if contentType == "series" {
-				var queries []string
-				for _, tv := range allTitles {
-					fullMeta := meta
-					fullMeta.Name = tv
-					queries = append(queries, BuildSearchQuery("series", fullMeta))
-					episodeMeta := MetaProviderResponse{Name: tv, Episode: meta.Episode, Season: meta.Season}
-					queries = append(queries, BuildSearchQuery("series", episodeMeta))
-				}
 				matched := false
-				for _, q := range queries {
-					if MatchesTitle(title, q, useStrictMatching) {
+				for _, tv := range allTitles {
+					if MatchesTitle(title, tv, useStrictMatching) {
 						matched = true
 						break
 					}
@@ -527,10 +519,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 			if contentType == "movie" {
 				matched := false
 				for _, tv := range allTitles {
-					m := meta
-					m.Name = tv
-					q := BuildSearchQuery("movie", m)
-					if MatchesTitle(title, q, useStrictMatching) {
+					if MatchesTitle(title, tv, useStrictMatching) {
 						matched = true
 						break
 					}
@@ -913,7 +902,7 @@ func MapStream(duration, size, fullResolution, title, fileExtension string, vide
 		bh.VideoSize = videoSize
 	}
 
-	return Stream{
+	return Stream {
 		Name:          name,
 		URL:           url,
 		Description:   description,
