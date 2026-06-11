@@ -25,7 +25,7 @@ var (
 	separatorsRe      = regexp.MustCompile(`[\.\-_:\s]+`)
 	bracketsRe        = regexp.MustCompile(`[\[\]\(\){}]`)
 	nonAlphanumericRe = regexp.MustCompile(`[^\w\s\x{00C0}-\x{00FF}]`)
-	seasonEpisodeRe   = regexp.MustCompile(`(?i)s\d+e\d+`)
+	seasonEpisodeRe   = regexp.MustCompile(`(?i)(s\d+e\d+|\b\d+x\d+\b)`)
 	yearPatternRe     = regexp.MustCompile(`\b(19\d{2}|20\d{2})\b`)
 	fourDigitYearRe   = regexp.MustCompile(`\b(\d{4})\b`)
 	digitsOnlyRe      = regexp.MustCompile(`\d+`)
@@ -47,6 +47,17 @@ var (
 		{regexp.MustCompile(`(?i)\bweb-?dl\b`), "WEB-DL"},
 	}
 )
+
+// ParseNameSafe wraps tnp.ParseName in a recover block to prevent unmaintained third-party library crashes
+func ParseNameSafe(title string) (parsed tnp.Torrent, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("tnp parser panic on '%s': %v", title, r)
+			parsed = tnp.Torrent{}
+		}
+	}()
+	return tnp.ParseName(title)
+}
 
 // IsLatinString checks if a string contains exclusively ASCII printable characters
 // or standard European accented Latin-1 Supplement characters (German, Spanish, French, etc.).
@@ -213,14 +224,17 @@ func GetQuality(title string, fallbackResolution string) string {
 
 	if fallbackResolution != "" {
 		// Allocation-Free parsing using direct Boyer-Moore primitive substring scans
-		cleanRes := strings.ReplaceAll(strings.ToLower(fallbackResolution), " ", "")
-		if strings.Contains(cleanRes, "3840x2160") || strings.Contains(cleanRes, "2160p") {
-			return "4k"
+		has2160 := strings.Contains(fallbackResolution, "2160") || strings.Contains(fallbackResolution, "4k") || strings.Contains(fallbackResolution, "4K")
+		has1080 := strings.Contains(fallbackResolution, "1080")
+		has720  := strings.Contains(fallbackResolution, "720")
+
+		if has2160 {
+			return "4K"
 		}
-		if strings.Contains(cleanRes, "1920x1080") || strings.Contains(cleanRes, "1080p") {
+		if has1080 {
 			return "1080p"
 		}
-		if strings.Contains(cleanRes, "1280x720") || strings.Contains(cleanRes, "720p") {
+		if has720 {
 			return "720p"
 		}
 		return fallbackResolution
@@ -229,7 +243,7 @@ func GetQuality(title string, fallbackResolution string) string {
 }
 
 // ---------------------------------------------------------------------------
-// Highly Selective Solr Query Builders (100% Strict Node.js Parity)
+// Clean, Standard Solr Query Builders (100% Strict Node.js Parity)
 // ---------------------------------------------------------------------------
 
 func BuildSearchQuery(contentType string, meta MetaProviderResponse) string {
