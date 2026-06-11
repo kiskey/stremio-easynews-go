@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	tnp "github.com/ProfChaos/torrent-name-parser"
 	"github.com/kiskey/stremio-easynews-go/internal/api"
 	"github.com/kiskey/stremio-easynews-go/internal/shared"
 )
@@ -145,7 +144,7 @@ func MatchesTitle(title, query string, strict bool) bool {
 
 	// Parse the raw title first using our robust parser
 	parsed := RobustParseInfo(title, 0)
-	if parsed == nil || parsed.Title == "" {
+	if parsed.Title == "" {
 		return false
 	}
 
@@ -253,24 +252,18 @@ func GetQuality(title string, fallbackResolution string) string {
 }
 
 // ---------------------------------------------------------------------------
-// Clean, Standard Solr Query Builders (100% Strict Node.js Parity)
+// Clean, Standard Solr Query Builders (100% Strict Node.js Parity) [2.4.1]
 // ---------------------------------------------------------------------------
 
 func BuildSearchQuery(contentType string, meta MetaProviderResponse) string {
 	exclusions := " !sample !trailer !passwd !password !preview"
 
-	// Force exact phrase matching by wrapping multi-word names in double quotes to prevent colons (:) and special characters from triggering Solr field-parsing latency [1.1.1, 10]
-	queryName := meta.Name
-	if isMultiWord(meta.Name) {
-		queryName = fmt.Sprintf("\"%s\"", meta.Name)
-	}
-
 	switch contentType {
 	case "movie":
 		if meta.Year > 0 {
-			return fmt.Sprintf("%s %d%s", queryName, meta.Year, exclusions)
+			return fmt.Sprintf("%s %d%s", meta.Name, meta.Year, exclusions)
 		}
-		return queryName + exclusions
+		return meta.Name + exclusions
 
 	case "series":
 		if meta.Episode != "" && meta.Season != "" {
@@ -278,13 +271,13 @@ func BuildSearchQuery(contentType string, meta MetaProviderResponse) string {
 			eNum, _ := strconv.Atoi(meta.Episode)
 
 			if sNum > 0 && eNum > 0 {
-				return fmt.Sprintf("%s S%02dE%02d%s", queryName, sNum, eNum, exclusions)
+				return fmt.Sprintf("%s S%02dE%02d%s", meta.Name, sNum, eNum, exclusions)
 			}
 		}
-		return queryName + exclusions
+		return meta.Name + exclusions
 
 	default:
-		return queryName + exclusions
+		return meta.Name + exclusions
 	}
 }
 
