@@ -19,6 +19,11 @@ import (
 
 var addonLogger = shared.CreateLogger("Addon", "")
 
+// Helper to determine if a title contains multiple words (preventing stop-word/index explosions)
+func isMultiWord(title string) bool {
+	return len(strings.Fields(title)) > 1
+}
+
 // ---------------------------------------------------------------------------
 // Addon Configuration
 // ---------------------------------------------------------------------------
@@ -275,7 +280,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 		for _, alt := range meta.AlternativeNames {
 			found := false
 			for _, t := range allTitles {
-				// Sanitized Deduplication (Prevents redundant parallel searches for identically tokenized names) [1]
+				// Sanitized Deduplication (Prevents redundant parallel searches for identically tokenized names)
 				if SanitizeTitle(t) == SanitizeTitle(alt) {
 					found = true
 					break
@@ -309,11 +314,11 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 	if contentType == "movie" {
 		if meta.Year > 0 {
 			if isMultiWord(meta.Name) {
-				// Multi-word movie: safe to search both with and without year [1]
+				// Multi-word movie: safe to search both with and without year
 				noYearQueries = buildQueries(false)
 				yearQueries = buildQueries(true)
 			} else {
-				// Single-word movie: ONLY search with year to prevent Solr index explosion! [1.1]
+				// Single-word movie: ONLY search with year to prevent Solr index explosion!
 				yearQueries = buildQueries(true)
 			}
 		} else {
@@ -321,7 +326,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 			noYearQueries = buildQueries(false)
 		}
 	} else if contentType == "series" {
-		// Series search (uses standard non-year SxxExx) [1]
+		// Series search (uses standard non-year SxxExx)
 		noYearQueries = buildQueries(false)
 	}
 
@@ -417,7 +422,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 
 	// Phase 3 Fallback: If results are extremely low (e.g. < 5) and the series title is multi-word,
 	// we perform a broad, title-only search to let our Go addon's MatchesTitle filter
-	// catch non-standard episode filename releases (especially useful when strict matching is off) [1]
+	// catch non-standard episode filename releases (especially useful when strict matching is off)
 	if contentType == "series" && totalFoundResults < 5 && isMultiWord(meta.Name) {
 		addonLogger.Info("Low results (%d) for multi-word series '%s'. Running title-only fallback search...", totalFoundResults, meta.Name)
 		
@@ -426,7 +431,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 			if strings.TrimSpace(titleVariant) == "" || !isMultiWord(titleVariant) {
 				continue
 			}
-			// Build query with just the title (no season/episode) using movie config template [1]
+			// Build query with just the title (no season/episode) using movie config template
 			m := MetaProviderResponse{Name: titleVariant}
 			titleFallbackQueries = append(titleFallbackQueries, BuildSearchQuery("movie", m))
 		}
