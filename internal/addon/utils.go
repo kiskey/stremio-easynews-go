@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	tnp "github.com/ProfChaos/torrent-name-parser"
 	"github.com/kiskey/stremio-easynews-go/internal/api"
 	"github.com/kiskey/stremio-easynews-go/internal/shared"
 )
@@ -26,16 +25,12 @@ var (
 	separatorsRe      = regexp.MustCompile(`[\.\-_:\s]+`)
 	bracketsRe        = regexp.MustCompile(`[\[\]\(\){}]`)
 	nonAlphanumericRe = regexp.MustCompile(`[^\w\s\x{00C0}-\x{00FF}]`)
-	
-	// Optimized: Supports standard SxxExx, unpadded SxEx, and legacy xx multiplier formats natively
-	seasonEpisodeRe   = regexp.MustCompile(`(?i)(s\d+e\d+|\b\d+x\d+\b)`)
-	
+	seasonEpisodeRe   = regexp.MustCompile(`(?i)s\d+e\d+`)
 	yearPatternRe     = regexp.MustCompile(`\b(19\d{2}|20\d{2})\b`)
 	fourDigitYearRe   = regexp.MustCompile(`\b(\d{4})\b`)
 	digitsOnlyRe      = regexp.MustCompile(`\d+`)
 	floatValueRe      = regexp.MustCompile(`[\d.]+`)
 
-	// Compiled with case-insensitive (?i) flags to prevent strings.ToLower allocations
 	fallbackQualityPatterns = []struct {
 		re      *regexp.Regexp
 		quality string
@@ -52,22 +47,6 @@ var (
 		{regexp.MustCompile(`(?i)\bweb-?dl\b`), "WEB-DL"},
 	}
 )
-
-// Helper to determine if a title contains multiple words (preventing stop-word/index explosions)
-func isMultiWord(title string) bool {
-	return len(strings.Fields(title)) > 1
-}
-
-// ParseNameSafe wraps tnp.ParseName in a recover block to prevent unmaintained third-party library crashes
-func ParseNameSafe(title string) (parsed tnp.Torrent, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("tnp parser panic on '%s': %v", title, r)
-			parsed = tnp.Torrent{}
-		}
-	}()
-	return tnp.ParseName(title)
-}
 
 // IsLatinString checks if a string contains exclusively ASCII printable characters
 // or standard European accented Latin-1 Supplement characters (German, Spanish, French, etc.).
@@ -140,157 +119,25 @@ func SanitizeTitle(title string) string {
 }
 
 // ---------------------------------------------------------------------------
-// Title Matching Execution
+// High-Precision Title Matching Engine (Unifies PN-SILEC and Homoglyphs)
 // ---------------------------------------------------------------------------
 
 func MatchesTitle(title, query string, strict bool) bool {
-	sanitizedQuery := SanitizeTitle(query)
-	sanitizedTitle := SanitizeTitle(title)
+	if !strict {
+		// Lenient Fallback: Case-insensitive substring matching when strict matching is disabled
+		sanitizedTitle := SanitizeTitle(title)
+		sanitizedQuery := SanitizeTitle(query)
+		return strings.Contains(sanitizedTitle, sanitizedQuery) || strings.Contains(sanitizedQuery, sanitizedTitle)
+	}
 
-	mainQueryPart := seasonEpisodeRe.Split(sanitizedQuery, 2)[0]
-	mainQueryPart = strings.TrimSpace(mainQueryPart)
-
-	if strict {
-		hasSeasonEpisode := seasonEpisodeRe.MatchString(sanitizedQuery)
-
-		if hasSeasonEpisode {
-			queryWords := strings.Fields(mainQueryPart)
-
-			if sanitizedTitle == mainQueryPart {
-				return true
-			}
-
-			seMatch := seasonEpisodeRe.FindStringIndex(sanitizedTitle)
-			if seMatch != nil {
-				titleBeforeSE := strings.TrimSpace(sanitizedTitle[:seMatch[0]])
-				if titleBeforeSE == mainQueryPart {
-					return true
-				}
-
-				titleWithoutYear := strings.TrimSpace(yearPatternRe.ReplaceAllString(titleBeforeSE, ""))
-				if titleWithoutYear == mainQueryPart {
-					return true
-				}
-
-				titleWordsWithoutYear := strings.Fields(titleWithoutYear)
-				if len(titleWordsWithoutYear) > len(queryWords) {
-					return false
-				}
-			} else {
-				return false
-			}
-
-			seIdx := seasonEpisodeRe.FindStringIndex(sanitizedTitle)
-			if seIdx == nil {
-				return false
-			}
-			titleBeforeSE := strings.TrimSpace(sanitizedTitle[:seIdx[0]])
-			titleWithoutYear := strings.TrimSpace(yearPatternRe.ReplaceAllString(titleBeforeSE, ""))
-			titleWordsWithoutYear := strings.Fields(titleWithoutYear)
-
-			isExactWordMatch := true
-			for i, qw := range queryWords {
-				if i >= len(titleWordsWithoutYear) || titleWordsWithoutYear[i] != qw {
-					isExactWordMatch = false
-					break
-				}
-			}
-			return isExactWordMatch
-		}
-
-		parsed, err := ParseNameSafe(title)
-		if err == nil && parsed.Title != "" {
-			sanitizedParsed := SanitizeTitle(parsed.Title)
-			queryWords := strings.Fields(sanitizedQuery)
-
-			if sanitizedParsed == sanitizedQuery {
-				return true
-			}
-
-			if parsed.Year > 0 {
-				titleWithoutYear := strings.TrimSpace(yearPatternRe.ReplaceAllString(sanitizedParsed, ""))
-				if titleWithoutYear == sanitizedQuery {
-					return true
-				}
-			}
-
-			queryYearMatch := fourDigitYearRe.FindString(sanitizedQuery)
-			if queryYearMatch != "" && parsed.Year > 0 {
-				queryWithoutYear := strings.TrimSpace(fourDigitYearRe.ReplaceAllString(sanitizedQuery, ""))
-				titleWithoutYear := strings.TrimSpace(yearPatternRe.ReplaceAllString(sanitizedParsed, ""))
-				if queryWithoutYear == titleWithoutYear && strconv.Itoa(parsed.Year) == queryYearMatch {
-					return true
-				}
-			}
-
-			parsedTitleWithoutYear := strings.TrimSpace(yearPatternRe.ReplaceAllString(sanitizedParsed, ""))
-			parsedWordsWithoutYear := strings.Fields(parsedTitleWithoutYear)
-			if len(parsedWordsWithoutYear) > len(queryWords) {
-				return false
-			}
-		}
+	// ── UPGRADE: PN-SILEC Franchise Leakage Guardrail ──
+	if !passTitleGuardrail(query, title) {
 		return false
 	}
 
-	if seasonEpisodeRe.MatchString(sanitizedQuery) {
-		seMatch := seasonEpisodeRe.FindString(sanitizedQuery)
-		if seMatch != "" {
-			pattern := strings.ToLower(seMatch)
-			if !strings.Contains(sanitizedTitle, pattern) {
-				return false
-			}
-
-			nameWords := strings.Fields(seasonEpisodeRe.ReplaceAllString(sanitizedQuery, " "))
-			nameWords = filterLongWords(nameWords, 2)
-
-			if len(nameWords) == 0 {
-				return true
-			}
-
-			matching := 0
-			for _, w := range nameWords {
-				if strings.Contains(sanitizedTitle, w) {
-					matching++
-				}
-			}
-			return float64(matching)/float64(len(nameWords)) >= 0.7
-		}
-	}
-
-	queryWords := strings.Fields(sanitizedQuery)
-	for _, word := range queryWords {
-		if len(word) <= 2 {
-			continue
-		}
-		if !strings.Contains(sanitizedTitle, word) {
-			return false
-		}
-	}
-
-	if len(queryWords) > 1 {
-		significant := filterLongWords(queryWords, 2)
-		if len(significant) > 0 {
-			matching := 0
-			for _, w := range significant {
-				if strings.Contains(sanitizedTitle, w) {
-					matching++
-				}
-			}
-			return float64(matching)/float64(len(significant)) >= 0.7
-		}
-	}
-
-	return true
-}
-
-func filterLongWords(words []string, minLen int) []string {
-	out := make([]string, 0, len(words))
-	for _, w := range words {
-		if len(w) > minLen {
-			out = append(out, w)
-		}
-	}
-	return out
+	// Perform robust, homoglyph-aware title similarity assessment
+	similarity := getTitleSimilarity(query, title)
+	return similarity >= 0.80
 }
 
 // ---------------------------------------------------------------------------
@@ -348,17 +195,13 @@ func CreateStreamPath(file api.FileData) string {
 }
 
 // ---------------------------------------------------------------------------
-// Quality Processing
+// Quality Processing (Leverages releasetitleparser with local fallbacks)
 // ---------------------------------------------------------------------------
 
 func GetQuality(title string, fallbackResolution string) string {
-	parsed, err := ParseNameSafe(title)
-	if err == nil && parsed.Title != "" && parsed.Resolution != "" {
-		resStr := string(parsed.Resolution)
-		if resStr == "2160p" || strings.Contains(resStr, "4k") {
-			return "4K"
-		}
-		return resStr
+	parsed := RobustParseInfo(title, 0)
+	if parsed != nil && parsed.Quality != "" && parsed.Quality != "sd" {
+		return parsed.Quality
 	}
 
 	// Zero-Allocation Hot Path Match: No string.ToLower() dynamic heap allocation
@@ -370,17 +213,14 @@ func GetQuality(title string, fallbackResolution string) string {
 
 	if fallbackResolution != "" {
 		// Allocation-Free parsing using direct Boyer-Moore primitive substring scans
-		has2160 := strings.Contains(fallbackResolution, "2160") || strings.Contains(fallbackResolution, "4k") || strings.Contains(fallbackResolution, "4K")
-		has1080 := strings.Contains(fallbackResolution, "1080")
-		has720  := strings.Contains(fallbackResolution, "720")
-
-		if has2160 {
-			return "4K"
+		cleanRes := strings.ReplaceAll(strings.ToLower(fallbackResolution), " ", "")
+		if strings.Contains(cleanRes, "3840x2160") || strings.Contains(cleanRes, "2160p") {
+			return "4k"
 		}
-		if has1080 {
+		if strings.Contains(cleanRes, "1920x1080") || strings.Contains(cleanRes, "1080p") {
 			return "1080p"
 		}
-		if has720 {
+		if strings.Contains(cleanRes, "1280x720") || strings.Contains(cleanRes, "720p") {
 			return "720p"
 		}
 		return fallbackResolution
@@ -389,7 +229,7 @@ func GetQuality(title string, fallbackResolution string) string {
 }
 
 // ---------------------------------------------------------------------------
-// Clean, Standard Solr Query Builders (100% Strict Node.js Parity) [1]
+// Highly Selective Solr Query Builders (100% Strict Node.js Parity)
 // ---------------------------------------------------------------------------
 
 func BuildSearchQuery(contentType string, meta MetaProviderResponse) string {
