@@ -87,7 +87,7 @@ func IsBadVideo(file api.FileData) bool {
 	if file.Virus {
 		return true
 	}
-	if strings.ToUpper(file.Type) != "VIDEO" {
+	if !strings.EqualFold(file.Type, "VIDEO") {
 		return true
 	}
 	if file.RawSize > 0 && file.RawSize < 20*1024*1024 {
@@ -100,16 +100,14 @@ func IsBadVideo(file api.FileData) bool {
 // Title Sanitization
 // ---------------------------------------------------------------------------
 
+// Precompiled replacer collapses 9 sequential string sweeps into a single-pass, single-allocation statement.
+var titleReplacer = strings.NewReplacer(
+	"ä", "ae", "ö", "oe", "ü", "ue", "ß", "ss",
+	"Ä", "Ae", "Ö", "Oe", "Ü", "Ue", "&", "and",
+)
+
 func SanitizeTitle(title string) string {
-	result := title
-	result = strings.ReplaceAll(result, "ä", "ae")
-	result = strings.ReplaceAll(result, "ö", "oe")
-	result = strings.ReplaceAll(result, "ü", "ue")
-	result = strings.ReplaceAll(result, "ß", "ss")
-	result = strings.ReplaceAll(result, "Ä", "Ae")
-	result = strings.ReplaceAll(result, "Ö", "Oe")
-	result = strings.ReplaceAll(result, "Ü", "Ue")
-	result = strings.ReplaceAll(result, "&", "and")
+	result := titleReplacer.Replace(title)
 	result = separatorsRe.ReplaceAllString(result, " ")
 	result = bracketsRe.ReplaceAllString(result, " ")
 	result = nonAlphanumericRe.ReplaceAllString(result, "")
