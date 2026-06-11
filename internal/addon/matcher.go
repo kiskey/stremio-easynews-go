@@ -1,7 +1,6 @@
 package addon
 
 import (
-	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -123,7 +122,7 @@ func containsNonASCII(s string) bool {
 			return true
 		}
 	}
-	return false
+	return true
 }
 
 func stripLeadingArticles(s string) string {
