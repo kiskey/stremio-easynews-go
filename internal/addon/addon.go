@@ -308,26 +308,27 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 		return queries
 	}
 
-	var noYearQueries []string
-	var yearQueries []string
+	var primaryQueries []string
+	var fallbackQueries []string
 
 	if contentType == "movie" {
 		if meta.Year > 0 {
 			if isMultiWord(meta.Name) {
-				// Multi-word movie: safe to search both with and without year
-				noYearQueries = buildQueries(false)
-				yearQueries = buildQueries(true)
+				// Step 1: Specific Year Search First (Low-latency, highly targeted) [1]
+				primaryQueries = buildQueries(true)
+				// Step 2: Broad Title-Only Fallback (Safe from stop-word explosions since it's multi-word) [1]
+				fallbackQueries = buildQueries(false)
 			} else {
-				// Single-word movie: ONLY search with year to prevent Solr index explosion!
-				yearQueries = buildQueries(true)
+				// Single-word movie: ONLY search with year to prevent Solr index explosion! [1]
+				primaryQueries = buildQueries(true)
 			}
 		} else {
 			// No year known: must search without year
-			noYearQueries = buildQueries(false)
+			primaryQueries = buildQueries(false)
 		}
 	} else if contentType == "series" {
 		// Series search (uses standard non-year SxxExx)
-		noYearQueries = buildQueries(false)
+		primaryQueries = buildQueries(false)
 	}
 
 	searchConcurrency := shared.ParseIntEnv("SEARCH_CONCURRENCY", 5)
@@ -403,26 +404,26 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 		return nil
 	}
 
-	// Phase 1: Search no-year queries first (if defined)
-	if len(noYearQueries) > 0 {
-		if err := runSearchPhase(noYearQueries); err != nil {
+	// Phase 1: Specific Year/Standard Search First [1]
+	if len(primaryQueries) > 0 {
+		if err := runSearchPhase(primaryQueries); err != nil {
 			addonLogger.Error("Easynews API search failed with authorization/connection error: %v", err)
 			return authErrorStream(config.UILanguage), nil
 		}
 	}
 
-	// Phase 2: If we are still below the total max results threshold, query with years (movies only)
-	if totalFoundResults < totalMaxResults && len(yearQueries) > 0 {
-		addonLogger.Info("Current results (%d) under cap (%d). Executing fallback year searches...", totalFoundResults, totalMaxResults)
-		if err := runSearchPhase(yearQueries); err != nil {
-			addonLogger.Error("Easynews API search (year fallback) failed: %v", err)
+	// Phase 2: If we are still below the total max results threshold, query broad fallback (multi-word movies only) [1]
+	if totalFoundResults < totalMaxResults && len(fallbackQueries) > 0 {
+		addonLogger.Info("Current results (%d) under cap (%d). Executing fallback broad searches...", totalFoundResults, totalMaxResults)
+		if err := runSearchPhase(fallbackQueries); err != nil {
+			addonLogger.Error("Easynews API search (broad fallback) failed: %v", err)
 			return authErrorStream(config.UILanguage), nil
 		}
 	}
 
 	// Phase 3 Fallback: If results are extremely low (e.g. < 5) and the series title is multi-word,
 	// we perform a broad, title-only search to let our Go addon's MatchesTitle filter
-	// catch non-standard episode filename releases (especially useful when strict matching is off)
+	// catch non-standard episode filename releases (especially useful when strict matching is off) [1]
 	if contentType == "series" && totalFoundResults < 5 && isMultiWord(meta.Name) {
 		addonLogger.Info("Low results (%d) for multi-word series '%s'. Running title-only fallback search...", totalFoundResults, meta.Name)
 		
@@ -431,7 +432,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 			if strings.TrimSpace(titleVariant) == "" || !isMultiWord(titleVariant) {
 				continue
 			}
-			// Build query with just the title (no season/episode) using movie config template
+			// Build query with just the title (no season/episode) using movie config template [1]
 			m := MetaProviderResponse{Name: titleVariant}
 			titleFallbackQueries = append(titleFallbackQueries, BuildSearchQuery("movie", m))
 		}
@@ -877,8 +878,9 @@ func MapStream(duration, size, fullResolution, title, fileExtension string, vide
 	}
 
 	// Statically formatted emoji literal characters to ensure safe cross-platform UTF-8 compilation
-	description := fmt.Sprintf("%s%s\n🕛 %s\n📦 %s %s\n%s",
+	description := fmt.Sprintf("%s%s\n%s\n🕛 %s\n📦 %s %s\n%s",
 		title, fileExtension,
+		FormatBadges(title), // Native badge metadata [1]
 		coalesce(duration, "unknown duration"),
 		coalesce(size, "unknown size"),
 		publishDate,
