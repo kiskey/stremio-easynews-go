@@ -25,7 +25,7 @@ var (
 	separatorsRe      = regexp.MustCompile(`[\.\-_:\s]+`)
 	bracketsRe        = regexp.MustCompile(`[\[\]\(\){}]`)
 	nonAlphanumericRe = regexp.MustCompile(`[^\w\s\x{00C0}-\x{00FF}]`)
-	seasonEpisodeRe   = regexp.MustCompile(`(?i)(s\d+e\d+|\b\d+x\d+\b)`)
+	seasonEpisodeRe   = regexp.MustCompile(`(?i)s\d+e\d+`)
 	yearPatternRe     = regexp.MustCompile(`\b(19\d{2}|20\d{2})\b`)
 	fourDigitYearRe   = regexp.MustCompile(`\b(\d{4})\b`)
 	digitsOnlyRe      = regexp.MustCompile(`\d+`)
@@ -47,17 +47,6 @@ var (
 		{regexp.MustCompile(`(?i)\bweb-?dl\b`), "WEB-DL"},
 	}
 )
-
-// ParseNameSafe wraps tnp.ParseName in a recover block to prevent unmaintained third-party library crashes
-func ParseNameSafe(title string) (parsed tnp.Torrent, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("tnp parser panic on '%s': %v", title, r)
-			parsed = tnp.Torrent{}
-		}
-	}()
-	return tnp.ParseName(title)
-}
 
 // IsLatinString checks if a string contains exclusively ASCII printable characters
 // or standard European accented Latin-1 Supplement characters (German, Spanish, French, etc.).
@@ -141,8 +130,15 @@ func MatchesTitle(title, query string, strict bool) bool {
 		return strings.Contains(sanitizedTitle, sanitizedQuery) || strings.Contains(sanitizedQuery, sanitizedTitle)
 	}
 
+	// Parse the raw title first using our robust parser
+	parsed := RobustParseInfo(title, 0)
+	if parsed == nil || parsed.Title == "" {
+		return false
+	}
+
 	// ── UPGRADE: PN-SILEC Franchise Leakage Guardrail ──
-	if !passTitleGuardrail(query, title) {
+	// Pass the parsed title instead of the raw filename!
+	if !passTitleGuardrail(query, parsed.Title) {
 		return false
 	}
 
@@ -212,6 +208,10 @@ func CreateStreamPath(file api.FileData) string {
 func GetQuality(title string, fallbackResolution string) string {
 	parsed := RobustParseInfo(title, 0)
 	if parsed != nil && parsed.Quality != "" && parsed.Quality != "sd" {
+		// Map common format of "4k" to uppercase "4K" to match stream naming style
+		if parsed.Quality == "4k" {
+			return "4K"
+		}
 		return parsed.Quality
 	}
 
@@ -224,17 +224,14 @@ func GetQuality(title string, fallbackResolution string) string {
 
 	if fallbackResolution != "" {
 		// Allocation-Free parsing using direct Boyer-Moore primitive substring scans
-		has2160 := strings.Contains(fallbackResolution, "2160") || strings.Contains(fallbackResolution, "4k") || strings.Contains(fallbackResolution, "4K")
-		has1080 := strings.Contains(fallbackResolution, "1080")
-		has720  := strings.Contains(fallbackResolution, "720")
-
-		if has2160 {
+		cleanRes := strings.ReplaceAll(strings.ToLower(fallbackResolution), " ", "")
+		if strings.Contains(cleanRes, "3840x2160") || strings.Contains(cleanRes, "2160p") {
 			return "4K"
 		}
-		if has1080 {
+		if strings.Contains(cleanRes, "1920x1080") || strings.Contains(cleanRes, "1080p") {
 			return "1080p"
 		}
-		if has720 {
+		if strings.Contains(cleanRes, "1280x720") || strings.Contains(cleanRes, "720p") {
 			return "720p"
 		}
 		return fallbackResolution
