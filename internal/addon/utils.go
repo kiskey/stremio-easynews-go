@@ -49,17 +49,6 @@ var (
 	}
 )
 
-// ParseNameSafe wraps tnp.ParseName in a recover block to prevent unmaintained third-party library crashes
-func ParseNameSafe(title string) (parsed tnp.Torrent, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("tnp parser panic on '%s': %v", title, r)
-			parsed = tnp.Torrent{}
-		}
-	}()
-	return tnp.ParseName(title)
-}
-
 // IsLatinString checks if a string contains exclusively ASCII printable characters
 // or standard European accented Latin-1 Supplement characters (German, Spanish, French, etc.).
 // Rejects Japanese, Korean, Chinese, Arabic, and Cyrillic character sets.
@@ -144,7 +133,7 @@ func MatchesTitle(title, query string, strict bool) bool {
 
 	// Parse the raw title first using our robust parser
 	parsed := RobustParseInfo(title, 0)
-	if parsed.Title == "" {
+	if parsed == nil || parsed.Title == "" {
 		return false
 	}
 
@@ -252,7 +241,7 @@ func GetQuality(title string, fallbackResolution string) string {
 }
 
 // ---------------------------------------------------------------------------
-// Clean, Standard Solr Query Builders (100% Strict Node.js Parity) [2.4.1]
+// Clean, Standard Solr Query Builders (100% Strict Node.js Parity)
 // ---------------------------------------------------------------------------
 
 func BuildSearchQuery(contentType string, meta MetaProviderResponse) string {
