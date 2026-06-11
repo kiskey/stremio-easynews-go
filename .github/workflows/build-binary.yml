@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write # Elevated to write so the action can create releases and upload assets
 
 jobs:
   build:
@@ -57,3 +57,16 @@ jobs:
           path: bin/stremio-easynews-linux-amd64
           if-no-files-found: error
           retention-days: 7
+
+      # This step only runs when pushing tags starting with 'v' (e.g. v2.9.2)
+      - name: Create GitHub Release and Upload Asset
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: bin/stremio-easynews-linux-amd64
+          name: Release ${{ steps.vars.outputs.VERSION }}
+          tag_name: ${{ steps.vars.outputs.VERSION }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
