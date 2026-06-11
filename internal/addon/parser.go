@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	rtp "github.com/ovrlord-app/releasetitleparser"
@@ -344,9 +345,17 @@ func SanitizeName(name string) string {
 	return s
 }
 
+// Global LRU Cache for RobustParseInfo (Caches up to 10000 unique filenames globally)
+var robustParseCache = NewBoundedCache[string, *ParseResult](10000, 24*time.Hour)
+
 func RobustParseInfo(title string, fallbackSeason int) *ParseResult {
+	if cached, ok := robustParseCache.Get(title); ok {
+		return cached
+	}
+
 	clean := SanitizeName(title)
 
+	var result *ParseResult
 	info := rtp.ParseSeriesTitle(clean)
 	if info != nil && (info.SeasonNumber != 0 || len(info.EpisodeNumbers) > 0) {
 		lang := "en"
@@ -357,7 +366,7 @@ func RobustParseInfo(title string, fallbackSeason int) *ParseResult {
 		if len(info.EpisodeNumbers) > 0 {
 			episode = info.EpisodeNumbers[0]
 		}
-		return &ParseResult{
+		result = &ParseResult{
 			Title:    info.SeriesTitle,
 			Season:   info.SeasonNumber,
 			Episode:  episode,
@@ -366,31 +375,34 @@ func RobustParseInfo(title string, fallbackSeason int) *ParseResult {
 			Quality:  getQuality(info.Quality.Quality.Resolution),
 			IsPack:   IsPack(info),
 		}
+	} else {
+		movie := rtp.ParseMovieTitle(clean)
+		if movie != nil {
+			lang := "en"
+			if len(movie.Languages) > 0 {
+				lang = getISO(movie.Languages[0])
+			}
+			result = &ParseResult{
+				Title:    movie.PrimaryMovieTitle(),
+				Season:   0,
+				Episode:  0,
+				Year:     movie.Year,
+				Language: lang,
+				Quality:  getQuality(movie.Quality.Quality.Resolution),
+			}
+		} else {
+			result = &ParseResult{
+				Title:    clean,
+				Season:   fallbackSeason,
+				Episode:  0,
+				Language: "en",
+				Quality:  "sd",
+			}
+		}
 	}
 
-	movie := rtp.ParseMovieTitle(clean)
-	if movie != nil {
-		lang := "en"
-		if len(movie.Languages) > 0 {
-			lang = getISO(movie.Languages[0])
-		}
-		return &ParseResult{
-			Title:    movie.PrimaryMovieTitle(),
-			Season:   0,
-			Episode:  0,
-			Year:     movie.Year,
-			Language: lang,
-			Quality:  getQuality(movie.Quality.Quality.Resolution),
-		}
-	}
-
-	return &ParseResult{
-		Title:    clean,
-		Season:   fallbackSeason,
-		Episode:  0,
-		Language: "en",
-		Quality:  "sd",
-	}
+	robustParseCache.Set(title, result)
+	return result
 }
 
 func ParseFilePath(path string, fallbackSeason int) *ParseResult {
