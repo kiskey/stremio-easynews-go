@@ -505,6 +505,23 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 					rejectedTitle++
 					continue
 				}
+
+				// Strict Season/Episode Matching for Series to prevent leakage of other episodes/seasons
+				targetSeason, _ := strconv.Atoi(meta.Season)
+				targetEpisode, _ := strconv.Atoi(meta.Episode)
+				if targetSeason > 0 && targetEpisode > 0 {
+					parsedEpisode := RobustParseInfo(title, 0)
+					
+					// Parse any pack or range info from the title
+					isPack, startEp, endEp, hasRange := ParsePackOrRange(title, targetEpisode)
+					
+					// If the parsed file has an explicit mismatching season or mismatching episode, reject it.
+					if (parsedEpisode.Season > 0 && parsedEpisode.Season != targetSeason) ||
+						(parsedEpisode.Episode > 0 && parsedEpisode.Episode != targetEpisode && !hasRange && !isPack && !parsedEpisode.IsPack) {
+						rejectedTitle++
+						continue
+					}
+				}
 			}
 
 			if contentType == "movie" {
