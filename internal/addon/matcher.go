@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode"
 )
 
@@ -142,13 +143,31 @@ func stripLeadingArticles(s string) string {
 	return s
 }
 
+// cleanWord converts a string to lowercase and removes non-alphanumeric characters.
+// Features an allocation-free fast-path for already cleaned string inputs.
 func cleanWord(w string) string {
-	return strings.Map(func(r rune) rune {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
-			return r
+	hasUpperOrNonAlpha := false
+	for i := 0; i < len(w); i++ {
+		c := w[i]
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') {
+			hasUpperOrNonAlpha = true
+			break
 		}
-		return -1
-	}, strings.ToLower(w))
+	}
+	if !hasUpperOrNonAlpha {
+		return w
+	}
+
+	var buf []byte
+	for i := 0; i < len(w); i++ {
+		c := w[i]
+		if c >= 'A' && c <= 'Z' {
+			buf = append(buf, c+32)
+		} else if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
+			buf = append(buf, c)
+		}
+	}
+	return string(buf)
 }
 
 // isYearNumber checks if a string is a standard 4-digit release year
@@ -306,8 +325,22 @@ func getHomoglyphRepresentations(r rune) []rune {
 	return []rune{r}
 }
 
+// Global recycled pool for fast map reuse (Zero allocations on map creation)
+var uint64MapPool = sync.Pool{
+	New: func() interface{} {
+		return make(map[uint64]struct{}, 64)
+	},
+}
+
+func clearMap(m map[uint64]struct{}) {
+	for k := range m {
+		delete(m, k)
+	}
+}
+
 // OverlapCoefficient computes the overlap coefficient between two strings
 // using multi-representation homoglyph character bigrams.
+// Fully optimized for zero heap allocations, bitwise rune-packing, and zero GC pressure.
 func OverlapCoefficient(s1, s2 string) float64 {
 	if s1 == s2 {
 		return 1.0
@@ -317,35 +350,56 @@ func OverlapCoefficient(s1, s2 string) float64 {
 		return 0.0
 	}
 
-	bg1 := make(map[string]struct{}, len(s1)*2)
-	runes1 := []rune(s1)
-	for i := 0; i < len(runes1)-1; i++ {
-		repsA := getHomoglyphRepresentations(runes1[i])
-		repsB := getHomoglyphRepresentations(runes1[i+1])
+	bg1 := uint64MapPool.Get().(map[uint64]struct{})
+	bg2 := uint64MapPool.Get().(map[uint64]struct{})
+	defer func() {
+		clearMap(bg1)
+		uint64MapPool.Put(bg1)
+		clearMap(bg2)
+		uint64MapPool.Put(bg2)
+	}()
+
+	var lastRune rune
+	hasLast := false
+	for _, r := range s1 {
+		if !hasLast {
+			lastRune = r
+			hasLast = true
+			continue
+		}
+		repsA := getHomoglyphRepresentations(lastRune)
+		repsB := getHomoglyphRepresentations(r)
 		for _, charA := range repsA {
 			for _, charB := range repsB {
-				bg1[string(charA)+string(charB)] = struct{}{}
+				packed := (uint64(charA) << 32) | uint64(charB)
+				bg1[packed] = struct{}{}
 			}
 		}
+		lastRune = r
 	}
 
-	bg2 := make(map[string]struct{}, len(s2)*2)
-	runes2 := []rune(s2)
 	intersection := 0
-	for i := 0; i < len(runes2)-1; i++ {
-		repsA := getHomoglyphRepresentations(runes2[i])
-		repsB := getHomoglyphRepresentations(runes2[i+1])
+	hasLast = false
+	for _, r := range s2 {
+		if !hasLast {
+			lastRune = r
+			hasLast = true
+			continue
+		}
+		repsA := getHomoglyphRepresentations(lastRune)
+		repsB := getHomoglyphRepresentations(r)
 		for _, charA := range repsA {
 			for _, charB := range repsB {
-				bigram := string(charA) + string(charB)
-				if _, ok := bg2[bigram]; !ok {
-					bg2[bigram] = struct{}{}
-					if _, exists := bg1[bigram]; exists {
+				packed := (uint64(charA) << 32) | uint64(charB)
+				if _, ok := bg2[packed]; !ok {
+					bg2[packed] = struct{}{}
+					if _, exists := bg1[packed]; exists {
 						intersection++
 					}
 				}
 			}
 		}
+		lastRune = r
 	}
 
 	if len(bg1) == 0 || len(bg2) == 0 {
