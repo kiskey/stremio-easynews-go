@@ -32,7 +32,7 @@ var metadataWords = map[string]bool{
 	"dual": true, "audio": true, "dubbed": true, "dub": true, "multi": true,
 	"hindi": true, "tamil": true, "telugu": true, "malayalam": true,
 	"kannada": true, "bengali": true, "marathi": true, "punjabi": true,
-	"english": true, "spanish": true, "french": true, "italian": true,
+	"english": true, "spanish": true, "french": true, "italic": true,
 	"russian": true, "korean": true, "japanese": true, "chinese": true,
 	"51": true, "71": true, "20": true, "10bit": true, "remux": true,
 	"3d": true, "sdr": true, "gb": true, "mb": true, "kb": true,
@@ -143,6 +143,11 @@ func cleanWord(w string) string {
 		}
 		return -1
 	}, strings.ToLower(w))
+}
+
+// isYearNumber checks if a string is a standard 4-digit release year
+func isYearNumber(s string) bool {
+	return len(s) == 4 && (strings.HasPrefix(s, "19") || strings.HasPrefix(s, "20"))
 }
 
 // isTechnicalToken performs an allocation-free dynamic check to identify season, episode,
@@ -413,7 +418,7 @@ func extractNonYearNumbers(s string) []string {
 		} else {
 			if current.Len() > 0 {
 				val := current.String()
-				if !ignoredNumbers[val] && !(len(val) == 4 && (strings.HasPrefix(val, "19") || strings.HasPrefix(val, "20"))) {
+				if !ignoredNumbers[val] && !isYearNumber(val) {
 					nums = append(nums, val)
 				}
 				current.Reset()
@@ -422,7 +427,7 @@ func extractNonYearNumbers(s string) []string {
 	}
 	if current.Len() > 0 {
 		val := current.String()
-		if !ignoredNumbers[val] && !(len(val) == 4 && (strings.HasPrefix(val, "19") || strings.HasPrefix(val, "20"))) {
+		if !ignoredNumbers[val] && !isYearNumber(val) {
 			nums = append(nums, val)
 		}
 	}
@@ -500,7 +505,8 @@ func sequelGuardrail(targetTitle, parsedTitle string, score float64) float64 {
 	extraWords := strings.Fields(extra)
 	for _, w := range extraWords {
 		cw := cleanWord(w)
-		if isRomanSequence(cw) || isNumber(cw) || sequelIndicators[cw] {
+		// Upgrade: Prevent legitimate release years from destroying movie similarity scores [1]
+		if isRomanSequence(cw) || (isNumber(cw) && !isYearNumber(cw)) || sequelIndicators[cw] {
 			return score * (float64(shorter) / float64(longer))
 		}
 	}
