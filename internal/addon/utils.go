@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	tnp "github.com/ProfChaos/torrent-name-parser"
 	"github.com/kiskey/stremio-easynews-go/internal/api"
 	"github.com/kiskey/stremio-easynews-go/internal/shared"
 )
@@ -25,12 +26,13 @@ var (
 	separatorsRe      = regexp.MustCompile(`[\.\-_:\s]+`)
 	bracketsRe        = regexp.MustCompile(`[\[\]\(\){}]`)
 	nonAlphanumericRe = regexp.MustCompile(`[^\w\s\x{00C0}-\x{00FF}]`)
-	seasonEpisodeRe   = regexp.MustCompile(`(?i)s\d+e\d+`)
+	seasonEpisodeRe   = regexp.MustCompile(`(?i)(s\d+e\d+|\b\d+x\d+\b)`)
 	yearPatternRe     = regexp.MustCompile(`\b(19\d{2}|20\d{2})\b`)
 	fourDigitYearRe   = regexp.MustCompile(`\b(\d{4})\b`)
 	digitsOnlyRe      = regexp.MustCompile(`\d+`)
 	floatValueRe      = regexp.MustCompile(`[\d.]+`)
 
+	// Compiled with case-insensitive (?i) flags to prevent strings.ToLower allocations
 	fallbackQualityPatterns = []struct {
 		re      *regexp.Regexp
 		quality string
@@ -47,6 +49,17 @@ var (
 		{regexp.MustCompile(`(?i)\bweb-?dl\b`), "WEB-DL"},
 	}
 )
+
+// ParseNameSafe wraps tnp.ParseName in a recover block to prevent unmaintained third-party library crashes
+func ParseNameSafe(title string) (parsed tnp.Torrent, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("tnp parser panic on '%s': %v", title, r)
+			parsed = tnp.Torrent{}
+		}
+	}()
+	return tnp.ParseName(title)
+}
 
 // IsLatinString checks if a string contains exclusively ASCII printable characters
 // or standard European accented Latin-1 Supplement characters (German, Spanish, French, etc.).
@@ -246,12 +259,18 @@ func GetQuality(title string, fallbackResolution string) string {
 func BuildSearchQuery(contentType string, meta MetaProviderResponse) string {
 	exclusions := " !sample !trailer !passwd !password !preview"
 
+	// Force exact phrase matching by wrapping multi-word names in double quotes to prevent colons (:) and special characters from triggering Solr field-parsing latency [1.1.1, 10]
+	queryName := meta.Name
+	if isMultiWord(meta.Name) {
+		queryName = fmt.Sprintf("\"%s\"", meta.Name)
+	}
+
 	switch contentType {
 	case "movie":
 		if meta.Year > 0 {
-			return fmt.Sprintf("%s %d%s", meta.Name, meta.Year, exclusions)
+			return fmt.Sprintf("%s %d%s", queryName, meta.Year, exclusions)
 		}
-		return meta.Name + exclusions
+		return queryName + exclusions
 
 	case "series":
 		if meta.Episode != "" && meta.Season != "" {
@@ -259,13 +278,13 @@ func BuildSearchQuery(contentType string, meta MetaProviderResponse) string {
 			eNum, _ := strconv.Atoi(meta.Episode)
 
 			if sNum > 0 && eNum > 0 {
-				return fmt.Sprintf("%s S%02dE%02d%s", meta.Name, sNum, eNum, exclusions)
+				return fmt.Sprintf("%s S%02dE%02d%s", queryName, sNum, eNum, exclusions)
 			}
 		}
-		return meta.Name + exclusions
+		return queryName + exclusions
 
 	default:
-		return meta.Name + exclusions
+		return queryName + exclusions
 	}
 }
 
