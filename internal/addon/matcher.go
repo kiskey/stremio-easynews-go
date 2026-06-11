@@ -43,6 +43,12 @@ var metadataWords = map[string]bool{
 	// Aligned common extensions and formats
 	"mkv": true, "mp4": true, "avi": true, "mov": true, "wmv": true, "flv": true, "webm": true,
 	"rar": true, "zip": true, "par2": true, "nfo": true, "srt": true,
+	// Country/region identifiers & miscellaneous common tags to prevent false negatives
+	"us": true, "uk": true, "ca": true, "nz": true, "au": true,
+	"fr": true, "de": true, "jp": true, "kr": true, "cn": true,
+	"hk": true, "tw": true, "it": true, "es": true, "nl": true,
+	"pl": true, "ru": true, "se": true, "no": true, "fi": true,
+	"dk": true, "new": true, "full": true, "all": true,
 }
 
 // sequelIndicators are words that strongly suggest a different franchise entry.
@@ -216,6 +222,31 @@ func passTitleGuardrail(targetTitle, parsedTitle string) bool {
 
 	targetWords := strings.Fields(targetNoArt)
 	parsedWords := strings.Fields(parsedNoArt)
+
+	// ── UPGRADE: Substantive Word Guardrail ──
+	// Ensure the parsed title doesn't contain unrelated substantive words.
+	// This prevents partial title matches, release group leaks, and unrelated shows.
+	targetWordSet := make(map[string]bool)
+	for _, w := range targetWords {
+		targetWordSet[cleanWord(w)] = true
+	}
+
+	hasUnrelatedSubstantiveWord := false
+	for _, w := range parsedWords {
+		cw := cleanWord(w)
+		if cw == "" {
+			continue
+		}
+		if targetWordSet[cw] || isTechnicalToken(cw) {
+			continue
+		}
+		hasUnrelatedSubstantiveWord = true
+		break
+	}
+
+	if hasUnrelatedSubstantiveWord {
+		return false // ❌ REJECTED (Unrelated Substantive Word Detected)
+	}
 
 	// ── UPGRADE: PN-SILEC Multi-Word Franchise Leakage Guardrail ──
 	if len(targetWords) > 1 && len(parsedWords) > len(targetWords) {
