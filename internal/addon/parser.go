@@ -2,6 +2,7 @@ package addon
 
 import (
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode"
@@ -92,7 +93,7 @@ var languageToISO = map[rtp.Language]string{
 // Collapses spaces and symbols between SXX and EP(XX) to force standard SXXEXX grouping
 var epPatternRegex = regexp.MustCompile(`(?i)(S\d+)?[\s\-_]*\bEP[\s\-_]*[\(\[]?\s*(\d+)\s*[\)\]]?\b`)
 var urlRegex = regexp.MustCompile(`\b(https?://\S+|www\.\S+\.\w+|[\w.-]+@[\w.-]+)\b`)
-var bracketRegex = regexp.MustCompile(`\[.*?[^\w\s-].*?\]`)
+var bracketRegex = regexp.MustCompile(`\\[.*?[^\\w\\s-].*?\\]`)
 
 var rangeRegex = regexp.MustCompile(`(?i)\b(?:e|ep|episode)?\s*(\d+)\s*(?:-|to)\s*(?:e|ep|episode)?\s*(\d+)\b`)
 var seasonFolderRegex = regexp.MustCompile(`(?i)\b(?:s|season|series)\s*0*(\d+)\b`)
