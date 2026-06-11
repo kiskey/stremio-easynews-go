@@ -513,7 +513,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 					parsedEpisode := RobustParseInfo(title, 0)
 					
 					// Parse any pack or range info from the title
-					isPack, startEp, endEp, hasRange := ParsePackOrRange(title, targetEpisode)
+					isPack, _, _, hasRange := ParsePackOrRange(title, targetEpisode)
 					
 					// If the parsed file has an explicit mismatching season or mismatching episode, reject it.
 					if (parsedEpisode.Season > 0 && parsedEpisode.Season != targetSeason) ||
