@@ -534,6 +534,27 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 					rejectedTitle++
 					continue
 				}
+
+				parsedMovie := RobustParseInfo(title, 0)
+
+				// 1. Prevent series episodes/packs from leaking into movie results
+				if parsedMovie.Season > 0 || parsedMovie.Episode > 0 || parsedMovie.IsPack {
+					rejectedTitle++
+					continue
+				}
+
+				// 2. Strict Movie Year Verification to prevent wide year gap leaks (like Gladiator II 2002 vs 2024)
+				if meta.Year > 0 && parsedMovie.Year > 0 {
+					diff := parsedMovie.Year - meta.Year
+					if diff < 0 {
+						diff = -diff
+					}
+					// Enforce a strict 2-year tolerance window
+					if diff > 2 {
+						rejectedTitle++
+						continue
+					}
+				}
 			}
 
 			streamPath := CreateStreamPath(file)
