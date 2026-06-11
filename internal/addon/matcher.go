@@ -41,6 +41,9 @@ var metadataWords = map[string]bool{
 	"complete": true, "repack": true, "proper": true, "vostfr": true,
 	"subs":     true, "sub": true, "esub": true, "vof": true, "vff": true,
 	"vf":       true, "season": true, "series": true, "episode": true, "pack": true,
+	// Aligned common extensions and formats
+	"mkv": true, "mp4": true, "avi": true, "mov": true, "wmv": true, "flv": true, "webm": true,
+	"rar": true, "zip": true, "par2": true, "nfo": true, "srt": true,
 }
 
 // sequelIndicators are words that strongly suggest a different franchise entry.
@@ -120,7 +123,7 @@ func containsNonASCII(s string) bool {
 			return true
 		}
 	}
-	return true
+	return false
 }
 
 func stripLeadingArticles(s string) string {
