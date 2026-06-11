@@ -513,6 +513,12 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 						rejectedTitle++
 						continue
 					}
+
+					// Explicit Movie/Empty Season Verification for Series to prevent unrelated non-series releases (like Slappy and the Stinkers)
+					if parsedEpisode.Season == 0 && parsedEpisode.Episode == 0 && !isPack && !parsedEpisode.IsPack {
+						rejectedTitle++
+						continue
+					}
 				}
 			}
 
@@ -902,7 +908,7 @@ func MapStream(duration, size, fullResolution, title, fileExtension string, vide
 		bh.VideoSize = videoSize
 	}
 
-	return Stream {
+	return Stream{
 		Name:          name,
 		URL:           url,
 		Description:   description,
