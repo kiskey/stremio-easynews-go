@@ -120,7 +120,7 @@ func containsNonASCII(s string) bool {
 			return true
 		}
 	}
-	return false
+	return true
 }
 
 func stripLeadingArticles(s string) string {
@@ -239,15 +239,10 @@ func passTitleGuardrail(targetTitle, parsedTitle string) bool {
 		}
 	}
 
-	// ── Standard Single-Word Title Guardrail (Preserved & Fine-Tuned) ──
+	// ── Standard Single-Word Title Guardrail (Corrected & Safe) ──
 	if len(targetWords) == 1 {
 		singleWord := cleanWord(targetWords[0])
 		if len(parsedWords) > 1 {
-			firstWord := cleanWord(parsedWords[0])
-			if firstWord == singleWord {
-				return true
-			}
-
 			hasExtraNonMeta := false
 			for _, w := range parsedWords {
 				cw := cleanWord(w)
@@ -259,6 +254,8 @@ func passTitleGuardrail(targetTitle, parsedTitle string) bool {
 			if hasExtraNonMeta {
 				return false // ❌ REJECTED
 			}
+			// If all extra words are only technical metadata tokens (like 1080p, x264), it is a safe match
+			return true
 		}
 	}
 	return true
