@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gin-contrib/gzip"
 	"github.com/kiskey/stremio-easynews-go/internal/addon"
 	"github.com/kiskey/stremio-easynews-go/internal/i18n"
 	"github.com/kiskey/stremio-easynews-go/internal/resolve"
@@ -30,6 +31,7 @@ func ServeHTTP(port int) {
 
 	r := gin.New()
 	r.Use(gin.Recovery()) // Protects the master daemon from crashing on runtime exceptions
+	r.Use(gzip.Gzip(gzip.DefaultCompression)) // Global Gzip compression [4]
 	r.Use(corsMiddleware())
 	r.Use(requestLogger())
 
