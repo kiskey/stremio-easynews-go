@@ -26,7 +26,7 @@ type ParseResult struct {
     IsRepack     bool
     Edition      string
     Date         string
-    ReleaseGroup string // P2.3 Fix: Added ReleaseGroup
+    ReleaseGroup string
 }
 
 type CandidateFile struct {
@@ -99,7 +99,6 @@ var languageToISO = map[rtp.Language]string{
     rtp.LanguageUzbek:         "uz",
 }
 
-// Collapses spaces and symbols between SXX and EP(XX) to force standard SXXEXX grouping
 var epPatternRegex = regexp.MustCompile(`(?i)(S\d+)?[\s\-_.]*\b(?:EP|EPISODE|E)[\s\-_.]*[\(\[]?\s*(\d+)\s*[\)\]]?\b`)
 var urlRegex = regexp.MustCompile(`\b(https?://\S+|www\.\S+\.\w+|[\w.-]+@[\w.-]+)\b`)
 var bracketRegex = regexp.MustCompile(`\[.*?[^\w\s-].*?\]`)
@@ -108,11 +107,9 @@ var rangeRegex = regexp.MustCompile(`(?i)\b(?:e|ep|episode)?\s*(\d+)\s*(?:-|to)\
 var seasonFolderRegex = regexp.MustCompile(`(?i)\b(?:s|season|series|vol|volume|book|chapter)\s*0*(\d+)\b`)
 var dateEpisodeRegex = regexp.MustCompile(`(?i)\b(\d{4})[\.\-_ ](\d{2})[\.\-_ ](\d{2})\b`)
 
-// P1.1 Fix: Word-boundary regex for PROPER/REPACK
 var properWordBoundaryRe = regexp.MustCompile(`(?i)\bproper\b`)
 var repackWordBoundaryRe = regexp.MustCompile(`(?i)\brepack\b`)
 
-// Bug 4 Fix: Pre-compiled Edition Patterns to prevent regex compilation inside parse loop
 var compiledEditionPatterns = []struct {
     Re   *regexp.Regexp
     Name string
@@ -127,13 +124,11 @@ var compiledEditionPatterns = []struct {
     {regexp.MustCompile(`(?i)imax`), "IMAX"},
 }
 
-// P2.4 Fix: Expanded packRegex patterns
-var packRegex = regexp.MustCompile(`(?i)\b(?:(?:complete|full)\s+(?:series|collection|season|s\d+)|season\s+complete|(?:season\s+)?s\d+(?:\s*-\s*s\d+)?\s+complete|pack|bundle|all\s+episodes?)\b`)
+// M3 Fix: Updated packRegex to handle "Season N Complete" without S-prefix
+var packRegex = regexp.MustCompile(`(?i)\b(?:(?:complete|full)\s+(?:series|collection|season|s?\d+)|season\s+complete|season\s+\d+(?:\s*-\s*(?:season\s+)?\d+)?\s+complete|(?:season\s+)?s\d+(?:\s*-\s*s\d+)?\s+complete|pack|bundle|all\s+episodes?)\b`)
 
-// Bug 3 Fix: Extracted regex for natural sort to package-level to prevent O(N log N) compilation
 var naturalCompareRegex = regexp.MustCompile(`\d+`)
 
-// Low-Allocation pre-defined filters deconstructed from Perl badges.json to RE2 standard.
 var filtersDef = []struct {
     ID        string
     GroupID   string
@@ -191,6 +186,7 @@ var filtersDef = []struct {
     {"s-croll", "gs", "CRUNCHYROLL", `(?i)\b(?:crunchyroll|crunch)\b`, nil},
 
     // Encoder
+    {"s-av1", "ge", "AV1", `(?i)\bav1\b`, nil}, // M2 Fix: Added AV1 badge
     {"s-h265", "ge", "H265 HEVC", `(?i)\b(?:x265|h[._-]?265|hevc)\b`, nil},
     {"s-h264", "ge", "H264 AVC", `(?i)\b(?:x264|h[._-]?264|avc)\b`, nil},
 }
@@ -215,7 +211,6 @@ func init() {
     }
 }
 
-// ParsePackOrRange checks if a torrent name is a complete pack or contains an episode range
 func ParsePackOrRange(name string, targetE int) (isPack bool, startE int, endE int, hasRange bool) {
     lower := strings.ToLower(name)
     if packRegex.MatchString(lower) {
@@ -232,7 +227,6 @@ func ParsePackOrRange(name string, targetE int) (isPack bool, startE int, endE i
     return false, 0, 0, false
 }
 
-// FormatBadges scans the source filename exactly once and extracts matched tags.
 func FormatBadges(title string) string {
     var res, qual, vis, aud, ch, enc, str string
 
@@ -343,32 +337,20 @@ func getQuality(res int) string {
 func SanitizeName(name string) string {
     s := name
 
-    // 1. Replace non-breaking spaces (\u00a0, \u200b) to standard spaces
     s = strings.ReplaceAll(s, "\u00a0", " ")
     s = strings.ReplaceAll(s, "\u200b", " ")
 
-    // 2. Unicode NFKC normalization (converts full-width characters to half-width)
     s = norm.NFKC.String(s)
-
-    // 3. Normalize episode patterns (e.g. S02 EP(15) -> S02E15)
     s = normalizeEpisodePatterns(s)
-
-    // 4. Remove residual URLs/domains (e.g. www.BTHDTV.com)
     s = urlRegex.ReplaceAllString(s, " ")
-
-    // 5. Remove residual empty/garbage brackets
     s = bracketRegex.ReplaceAllString(s, " ")
-
-    // 6. Collapse whitespace
     s = strings.Join(strings.Fields(s), " ")
 
-    // 7. Trim leftover leading/trailing punctuation
     s = strings.TrimLeft(s, " .-_[]()/\\")
     s = strings.TrimRight(s, " .-_[]()/\\")
     return s
 }
 
-// Global LRU Cache for RobustParseInfo
 var robustParseCache = NewBoundedCache[string, *ParseResult](10000, 24*time.Hour)
 
 func RobustParseInfo(title string, fallbackSeason int) *ParseResult {
@@ -380,7 +362,6 @@ func RobustParseInfo(title string, fallbackSeason int) *ParseResult {
 
     var result *ParseResult
 
-    // Check for daily/date-based episodes first (e.g., Daily.Show.2024.05.15)
     if m := dateEpisodeRegex.FindStringSubmatch(clean); len(m) == 4 {
         dateStr := fmt.Sprintf("%s-%s-%s", m[1], m[2], m[3])
         idx := strings.Index(clean, m[0])
@@ -419,7 +400,7 @@ func RobustParseInfo(title string, fallbackSeason int) *ParseResult {
                 Language:     lang,
                 Quality:      getQuality(info.Quality.Quality.Resolution),
                 IsPack:       IsPack(info),
-                ReleaseGroup: info.ReleaseGroup, // P2.3 Fix
+                ReleaseGroup: info.ReleaseGroup,
             }
         } else {
             movie := rtp.ParseMovieTitle(clean)
@@ -436,7 +417,7 @@ func RobustParseInfo(title string, fallbackSeason int) *ParseResult {
                     Year:         movie.Year,
                     Language:     lang,
                     Quality:      getQuality(movie.Quality.Quality.Resolution),
-                    ReleaseGroup: movie.ReleaseGroup, // P2.3 Fix
+                    ReleaseGroup: movie.ReleaseGroup,
                 }
             } else {
                 result = &ParseResult{
@@ -451,7 +432,6 @@ func RobustParseInfo(title string, fallbackSeason int) *ParseResult {
         }
     }
 
-    // P1.1 Fix: Word-boundary PROPER/REPACK detection
     if properWordBoundaryRe.MatchString(clean) {
         result.IsProper = true
     }
@@ -459,7 +439,6 @@ func RobustParseInfo(title string, fallbackSeason int) *ParseResult {
         result.IsRepack = true
     }
 
-    // P3.2 Fix: Multi-edition accumulation
     var editions []string
     for _, p := range compiledEditionPatterns {
         if p.Re.MatchString(clean) {
@@ -499,7 +478,7 @@ func ParseFilePath(path string, fallbackSeason int) *ParseResult {
             Season:       season,
             Episode:      episode,
             Episodes:     episodes,
-            ReleaseGroup: info.ReleaseGroup, // P2.3 Fix
+            ReleaseGroup: info.ReleaseGroup,
         }
     }
     return &ParseResult{
@@ -513,6 +492,7 @@ func IsPack(info *rtp.ParsedEpisodeInfo) bool {
     return info != nil && (info.FullSeason || info.IsPartialSeason || info.IsMultiSeason)
 }
 
+// M4 Fix: Added OVA, ONA, OAD detection
 func isExtraOrSpecial(path string) bool {
     p := strings.ToLower(path)
     return strings.Contains(p, "special") ||
@@ -523,7 +503,10 @@ func isExtraOrSpecial(path string) bool {
         strings.Contains(p, "sample") ||
         strings.Contains(p, "extra") ||
         strings.Contains(p, "behind the scenes") ||
-        strings.Contains(p, "interview")
+        strings.Contains(p, "interview") ||
+        strings.Contains(p, "ova") ||
+        strings.Contains(p, "ona") ||
+        strings.Contains(p, "oad")
 }
 
 func isExtraOrSpecialRelaxed(path string) bool {
@@ -585,7 +568,6 @@ func isDecimalDot(s string, i int) bool {
     return left >= '0' && left <= '9' && right >= '0' && right <= '9'
 }
 
-// Bug 3 Fix: naturalCompare now uses package-level regex
 func naturalCompare(a, b string) bool {
     padA := naturalCompareRegex.ReplaceAllStringFunc(a, func(m string) string {
         n, _ := strconv.Atoi(m)
@@ -608,7 +590,6 @@ func FindBestSeriesFile(candidates []CandidateFile, targetSeason, targetEpisode,
         checkExtra = isExtraOrSpecialRelaxed
     }
 
-    // 1. Direct and Range-based Scanning with Size-weighting
     for _, c := range candidates {
         if checkExtra(c.Path) {
             continue
@@ -648,7 +629,6 @@ func FindBestSeriesFile(candidates []CandidateFile, targetSeason, targetEpisode,
         return bestCandidate, true
     }
 
-    // 2. Index-Based Sequential Match Fallback (For absolute numbering in folder packs)
     var seasonMatches []CandidateFile
     for _, c := range candidates {
         if checkExtra(c.Path) {
@@ -674,7 +654,6 @@ func FindBestSeriesFile(candidates []CandidateFile, targetSeason, targetEpisode,
     }
 
     if len(seasonMatches) > 0 {
-        // Use natural sort to ensure E02 comes before E10
         sort.Slice(seasonMatches, func(i, j int) bool {
             return naturalCompare(strings.ToLower(seasonMatches[i].Path), strings.ToLower(seasonMatches[j].Path))
         })
