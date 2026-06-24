@@ -24,6 +24,9 @@ type BehaviorHints struct {
 // SortMeta structures performance properties for low-latency sorting.
 type SortMeta struct {
     QualityScore     int
+    SourceScore      int     // 8=Remux, 7=BluRay, 6=WEB-DL, 5=HDTV, 4=HDRip, 3=DVDRip, 2=CAM, 1=TS, 0=unknown
+    HDRScore         int     // 4=DV, 3=HDR10+, 2=HDR10, 1=HDR, 0=SDR
+    CodecScore       int     // 3=AV1, 2=HEVC, 1=AVC, 0=other
     SizeUnit         string  // "GB", "MB", or ""
     SizeValue        float64
     DateMs           int64
