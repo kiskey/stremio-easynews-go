@@ -38,7 +38,7 @@ type AddonConfig struct {
     UILanguage           string `json:"uiLanguage"`
 }
 
-var defaultConfig = AddonConfig{
+var defaultConfig = AddonConfig(
     StrictTitleMatching:  "true",
     EnableAltTitles:      "true",
     AltTitleCountry:      "",
@@ -47,7 +47,7 @@ var defaultConfig = AddonConfig{
     ShowQualities:        "4k,1080p,720p,480p",
     MaxResultsPerQuality: "0",
     MaxFileSize:          "0",
-}
+)
 
 func ParseConfig(configStr string) AddonConfig {
     config := defaultConfig
@@ -916,24 +916,41 @@ func MapStream(duration, size, fullResolution, title, fileExtension string, vide
     hasPreferredLang := preferredLang != "" && file.Alangs != nil && contains(file.Alangs, preferredLang)
 
     sourceScore := 0
-    if strings.Contains(badges, "Remux") { sourceScore = 8 }
-    else if strings.Contains(badges, "BluRay") { sourceScore = 7 }
-    else if strings.Contains(badges, "WEB-DL") { sourceScore = 6 }
-    else if strings.Contains(badges, "WEBRip") { sourceScore = 5 }
-    else if strings.Contains(badges, "HDTV") { sourceScore = 5 }
-    else if strings.Contains(badges, "HDRip") { sourceScore = 4 }
-    else if strings.Contains(badges, "DVDRip") { sourceScore = 3 }
+    if strings.Contains(badges, "Remux") {
+        sourceScore = 8
+    } else if strings.Contains(badges, "BluRay") {
+        sourceScore = 7
+    } else if strings.Contains(badges, "WEB-DL") {
+        sourceScore = 6
+    } else if strings.Contains(badges, "WEBRip") {
+        sourceScore = 5
+    } else if strings.Contains(badges, "HDTV") {
+        sourceScore = 5
+    } else if strings.Contains(badges, "HDRip") {
+        sourceScore = 4
+    } else if strings.Contains(badges, "DVDRip") {
+        sourceScore = 3
+    }
 
     hdrScore := 0
-    if strings.Contains(badges, "DV") { hdrScore = 4 }
-    else if strings.Contains(badges, "HDR10+") { hdrScore = 3 }
-    else if strings.Contains(badges, "HDR10") { hdrScore = 2 }
-    else if strings.Contains(badges, "HDR") { hdrScore = 1 }
+    if strings.Contains(badges, "DV") {
+        hdrScore = 4
+    } else if strings.Contains(badges, "HDR10+") {
+        hdrScore = 3
+    } else if strings.Contains(badges, "HDR10") {
+        hdrScore = 2
+    } else if strings.Contains(badges, "HDR") {
+        hdrScore = 1
+    }
 
     codecScore := 0
-    if strings.Contains(badges, "AV1") { codecScore = 3 }
-    else if strings.Contains(badges, "H265 HEVC") { codecScore = 2 }
-    else if strings.Contains(badges, "H264 AVC") { codecScore = 1 }
+    if strings.Contains(badges, "AV1") {
+        codecScore = 3
+    } else if strings.Contains(badges, "H265 HEVC") {
+        codecScore = 2
+    } else if strings.Contains(badges, "H264 AVC") {
+        codecScore = 1
+    }
 
     sortMeta := &SortMeta{
         QualityScore:     QualityScoreFromLabel(quality),
