@@ -161,7 +161,8 @@ func (api *EasynewsAPI) setCache(key string, data EasynewsSearchResponse) {
 // ---------------------------------------------------------------------------
 
 // Search queries a single advanced page of results from Easynews.
-func (api *EasynewsAPI) Search(opts SearchOptions) (EasynewsSearchResponse, error) {
+// Context is used to cancel in-flight requests during early exit.
+func (api *EasynewsAPI) Search(ctx context.Context, opts SearchOptions) (EasynewsSearchResponse, error) {
     if opts.Query == "" {
         return EasynewsSearchResponse{}, fmt.Errorf("query parameter is required")
     }
@@ -218,7 +219,8 @@ func (api *EasynewsAPI) Search(opts SearchOptions) (EasynewsSearchResponse, erro
 
     apiLogger.Info("Solr: Querying Easynews URL: '%s...'", u.String()[:100])
 
-    ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+    // Apply timeout to the passed context
+    ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
     defer cancel()
 
     req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
@@ -264,7 +266,7 @@ func (api *EasynewsAPI) Search(opts SearchOptions) (EasynewsSearchResponse, erro
 }
 
 // SearchAll handles iterative pagination across Easynews search pages up to total thresholds.
-func (api *EasynewsAPI) SearchAll(opts SearchOptions) (EasynewsSearchResponse, error) {
+func (api *EasynewsAPI) SearchAll(ctx context.Context, opts SearchOptions) (EasynewsSearchResponse, error) {
     totalMaxResults := shared.ParseIntEnv("TOTAL_MAX_RESULTS", 500)
     maxPages := shared.ParseIntEnv("MAX_PAGES", 10)
     maxResultsPerPage := shared.ParseIntEnv("MAX_RESULTS_PER_PAGE", 250)
@@ -279,6 +281,12 @@ func (api *EasynewsAPI) SearchAll(opts SearchOptions) (EasynewsSearchResponse, e
     apiLogger.Info("SearchAll: Executing fanned pagination searchAll for: '%s' (max results: %d, max pages: %d)", opts.Query, totalMaxResults, maxPages)
 
     for pageCount < maxPages {
+        // Check if context is cancelled before starting next page
+        if ctx.Err() != nil {
+            res.Data = allData
+            return res, nil
+        }
+
         remaining := totalMaxResults - len(allData)
         if remaining <= 0 {
             apiLogger.Info("SearchAll: Reached max requested results limit (%d), stopping pagination.", totalMaxResults)
@@ -292,8 +300,13 @@ func (api *EasynewsAPI) SearchAll(opts SearchOptions) (EasynewsSearchResponse, e
 
         apiLogger.Info("SearchAll: Fetching page %d (fixed page size: %d) for query '%s'", pageNr, maxResultsPerPage, opts.Query)
 
-        pageResult, err := api.Search(pageOpts)
+        pageResult, err := api.Search(ctx, pageOpts)
         if err != nil {
+            if ctx.Err() != nil {
+                apiLogger.Info("SearchAll: Context cancelled during fetch. Returning %d partial results.", len(allData))
+                res.Data = allData
+                return res, nil
+            }
             apiLogger.Error("SearchAll: Error fetching page %d: %v", pageNr, err)
             if len(allData) > 0 {
                 apiLogger.Info("SearchAll: Returning %d partial results gathered before the error.", len(allData))
