@@ -18,9 +18,6 @@ jobs:
   build:
     name: Compile Statically Linked Alpine Binary
     runs-on: ubuntu-latest
-    env:
-      # This is CRITICAL to prevent Go from trying to download go1.25.11
-      GOTOOLCHAIN: local 
     steps:
       - name: Check out Source Code
         uses: actions/checkout@v4
@@ -30,6 +27,24 @@ jobs:
         with:
           go-version: '1.23'
           cache: true
+
+      - name: Patch Dependency Go Version
+        run: |
+          # Clone the dependency and fix the fake go 1.25 requirement
+          git clone https://github.com/ovrlord-app/releasetitleparser /tmp/rtp
+          cd /tmp/rtp
+          # Checkout the specific commit that go.mod was using
+          git checkout 4c9e25386576
+          # Fix the go version in go.mod
+          sed -i 's/go 1.25/go 1.22/g' go.mod
+          # If go.mod doesn't exist or is empty, create a basic one
+          if [ ! -f go.mod ] || [ ! -s go.mod ]; then
+            echo "module github.com/ovrlord-app/releasetitleparser" > go.mod
+            echo "go 1.22" >> go.mod
+          fi
+          cd -
+          # Add replace directive to use the patched local copy
+          go mod edit -replace github.com/ovrlord-app/releasetitleparser=/tmp/rtp
 
       - name: Tidy Go Modules
         run: |
