@@ -185,12 +185,35 @@ var ignoredNumbers = map[string]bool{
 
 var seasonRangeRegex = regexp.MustCompile(`(?i)\b(?:s|season|seasons)\s*0*(\d+)\s*(?:-|to)\s*0*(\d+)\b`)
 
+// P3.3 Fix: Added roman numeral false positives
 var romanFalsePositives = map[string]bool{
     "mix": true, "dim": true, "vim": true, "civil": true,
     "maid": true, "dial": true, "midi": true, "id": true,
     "did": true, "mid": true, "lid": true, "vid": true,
     "mic": true, "max": true, "maxim": true, "min": true,
     "mild": true, "mind": true, "mill": true, "milk": true,
+    "cd": true, "dc": true, "mc": true, "cm": true,
+}
+
+// P2.2 Fix: Abbreviation expansion map
+var abbreviationMap = map[string][]string{
+    "dr":   {"doctor"},
+    "st":   {"saint"},
+    "mr":   {"mister"},
+    "mrs":  {"missus", "missis"},
+    "vs":   {"versus"},
+    "wk":   {"week"},
+    "ft":   {"feat", "featuring"},
+}
+
+func expandAbbreviations(title string) string {
+    words := strings.Fields(strings.ToLower(title))
+    for i, w := range words {
+        if expansions, ok := abbreviationMap[w]; ok && len(expansions) > 0 {
+            words[i] = expansions[0] // Just use the first expansion for similarity
+        }
+    }
+    return strings.Join(words, " ")
 }
 
 // isBlockedArchive checks if a torrent name is a compressed archive that Stremio cannot play
@@ -727,6 +750,10 @@ func getTitleSimilarity(tmdbTitle, torrentName string) float64 {
 
     cleanTmdb := strings.Trim(strings.ToLower(tmdbTitle), " .-_[]()/\\")
     cleanParsed := strings.Trim(strings.ToLower(parsed.Title), " .-_[]()/\\")
+
+    // P2.2 Fix: Expand abbreviations
+    cleanTmdb = expandAbbreviations(cleanTmdb)
+    cleanParsed = expandAbbreviations(cleanParsed)
 
     cleanTmdb = normalizeNumbersInTitle(cleanTmdb)
     cleanParsed = normalizeNumbersInTitle(cleanParsed)
