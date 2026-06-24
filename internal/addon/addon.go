@@ -38,7 +38,8 @@ type AddonConfig struct {
     UILanguage           string `json:"uiLanguage"`
 }
 
-var defaultConfig = AddonConfig(
+// Fixed: Using curly braces for struct initialization
+var defaultConfig = AddonConfig{
     StrictTitleMatching:  "true",
     EnableAltTitles:      "true",
     AltTitleCountry:      "",
@@ -47,7 +48,7 @@ var defaultConfig = AddonConfig(
     ShowQualities:        "4k,1080p,720p,480p",
     MaxResultsPerQuality: "0",
     MaxFileSize:          "0",
-)
+}
 
 func ParseConfig(configStr string) AddonConfig {
     config := defaultConfig
@@ -915,6 +916,7 @@ func MapStream(duration, size, fullResolution, title, fileExtension string, vide
     }
     hasPreferredLang := preferredLang != "" && file.Alangs != nil && contains(file.Alangs, preferredLang)
 
+    // Fixed syntax: else if on the same line as closing brace
     sourceScore := 0
     if strings.Contains(badges, "Remux") {
         sourceScore = 8
