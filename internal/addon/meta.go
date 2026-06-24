@@ -6,7 +6,6 @@ import (
     "io"
     "net/http"
     "os"
-    "sort"
     "strconv"
     "strings"
     "sync"
@@ -27,24 +26,16 @@ var (
 
 const metaFetchTimeout = 5000 * time.Millisecond
 
-// ---------------------------------------------------------------------------
-// Structural Cache Mappings
-// ---------------------------------------------------------------------------
-
 type tmdbIDMapping struct {
     id               int
     isMovie          bool
     originalLanguage string
 }
 
-// ---------------------------------------------------------------------------
-// Thread-Safe Bounded Generic Cache Structure (P3.1 Fix: LRU Eviction)
-// ---------------------------------------------------------------------------
-
+// H3 Fix: Removed lastAccess, simplified cache for performance and correctness
 type cacheEntry[V any] struct {
-    value      V
-    expiresAt  int64
-    lastAccess int64
+    value     V
+    expiresAt int64
 }
 
 type BoundedCache[K comparable, V any] struct {
@@ -70,7 +61,6 @@ func (c *BoundedCache[K, V]) Get(key K) (V, bool) {
         var zero V
         return zero, false
     }
-    
     now := time.Now().UnixNano()
     if now > entry.expiresAt {
         c.mu.Lock()
@@ -82,17 +72,6 @@ func (c *BoundedCache[K, V]) Get(key K) (V, bool) {
         var zero V
         return zero, false
     }
-
-    // Update lastAccess asynchronously to avoid write lock contention
-    go func() {
-        c.mu.Lock()
-        if e, ok := c.data[key]; ok {
-            e.lastAccess = time.Now().UnixNano()
-            c.data[key] = e
-        }
-        c.mu.Unlock()
-    }()
-
     return entry.value, true
 }
 
@@ -100,39 +79,12 @@ func (c *BoundedCache[K, V]) Set(key K, value V) {
     c.mu.Lock()
     defer c.mu.Unlock()
 
-    now := time.Now().UnixNano()
     c.data[key] = cacheEntry[V]{
-        value:      value,
-        expiresAt:  now + int64(c.ttl),
-        lastAccess: now,
+        value:     value,
+        expiresAt: time.Now().Add(c.ttl).UnixNano(),
     }
 
     if len(c.data) > c.maxEntries {
-        // P3.1 Fix: LRU Eviction - Collect keys, sort by lastAccess, delete oldest half
-        type kv struct {
-            k string
-            t int64
-        }
-        var entries []kv
-        for k, v := range c.data {
-            // Using fmt.Sprintf to handle generic key K
-            entries = append(entries, kv{fmt.Sprintf("%v", k), v.lastAccess})
-        }
-        
-        sort.Slice(entries, func(i, j int) bool {
-            return entries[i].t < entries[j].t
-        })
-
-        half := len(entries) / 2
-        for i := 0; i < half; i++ {
-            // This is a workaround because we cannot delete generic K directly from string
-            // In a real production env, we'd use a proper LRU library or typed keys
-            // For now, we just delete the oldest half randomly since map iteration is random anyway
-            // and the above sort is just to illustrate the concept.
-            // Actually, let's just do a random eviction for simplicity and performance if generic.
-        }
-        
-        // Fallback to random eviction if generic key conversion is too slow
         count := 0
         for k := range c.data {
             if count >= c.maxEntries/2 {
@@ -144,26 +96,21 @@ func (c *BoundedCache[K, V]) Set(key K, value V) {
     }
 }
 
-// Cache Instances
 var (
-    imdbToTMDBIDCache     = NewBoundedCache[string, tmdbIDMapping](2000, 48*time.Hour)
-    tmdbAltTitlesCache    = NewBoundedCache[string, []string](2000, 24*time.Hour)
-    tmdbOrigTitleCache    = NewBoundedCache[string, string](2000, 48*time.Hour)
-    tmdbTransTitleCache   = NewBoundedCache[string, string](2000, 24*time.Hour)
-    tmdbSeasonAirDateCache = NewBoundedCache[string, map[int]string](2000, 24*time.Hour) // P3.4 Fix: Bulk season cache
-    metaResponseCache     = NewBoundedCache[string, MetaProviderResponse](2000, 24*time.Hour)
+    imdbToTMDBIDCache      = NewBoundedCache[string, tmdbIDMapping](2000, 48*time.Hour)
+    tmdbAltTitlesCache     = NewBoundedCache[string, []string](2000, 24*time.Hour)
+    tmdbOrigTitleCache     = NewBoundedCache[string, string](2000, 48*time.Hour)
+    tmdbTransTitleCache    = NewBoundedCache[string, string](2000, 24*time.Hour)
+    tmdbSeasonAirDateCache = NewBoundedCache[string, map[int]string](2000, 24*time.Hour)
+    metaResponseCache      = NewBoundedCache[string, MetaProviderResponse](2000, 24*time.Hour)
 
-    tmdbIDSingleflight     singleflight.Group
-    altTitlesSingleflight  singleflight.Group
-    origTitleSingleflight  singleflight.Group
-    transTitleSingleflight singleflight.Group
-    seasonAirDateSingleflight singleflight.Group // P3.4 Fix
-    metaSingleflight       singleflight.Group
+    tmdbIDSingleflight        singleflight.Group
+    altTitlesSingleflight     singleflight.Group
+    origTitleSingleflight     singleflight.Group
+    transTitleSingleflight    singleflight.Group
+    seasonAirDateSingleflight singleflight.Group
+    metaSingleflight          singleflight.Group
 )
-
-// ---------------------------------------------------------------------------
-// Resilient API Network Fetcher with Exponential Backoff
-// ---------------------------------------------------------------------------
 
 func fetchWithRetry(ctx context.Context, client *http.Client, req *http.Request) (*http.Response, error) {
     var resp *http.Response
@@ -179,7 +126,6 @@ func fetchWithRetry(ctx context.Context, client *http.Client, req *http.Request)
                 return resp, nil
             }
 
-            // Handle 429 Too Many Requests
             if resp.StatusCode == 429 {
                 retryAfter := resp.Header.Get("Retry-After")
                 resp.Body.Close()
@@ -211,10 +157,6 @@ func fetchWithRetry(ctx context.Context, client *http.Client, req *http.Request)
     }
     return nil, err
 }
-
-// ---------------------------------------------------------------------------
-// ID Resolution Helper (IMDb ID -> TMDB ID)
-// ---------------------------------------------------------------------------
 
 func resolveTMDBID(imdbID string) (int, bool, string, error) {
     if val, ok := imdbToTMDBIDCache.Get(imdbID); ok {
@@ -300,10 +242,6 @@ func resolveTMDBID(imdbID string) (int, bool, string, error) {
     return mapping.id, mapping.isMovie, mapping.originalLanguage, nil
 }
 
-// ---------------------------------------------------------------------------
-// TMDB Season Air Dates Resolution (P3.4 Fix: Bulk Fetching)
-// ---------------------------------------------------------------------------
-
 func getTMDBSeasonAirDates(imdbID string, season int) map[int]string {
     if !useTMDB || season == 0 {
         return nil
@@ -353,7 +291,6 @@ func getTMDBSeasonAirDates(imdbID string, season int) map[int]string {
 
         airDates := make(map[int]string)
         for _, ep := range data.Episodes {
-            // Convert YYYY-MM-DD to YYYY.MM.DD for Easynews search
             dateStr := strings.ReplaceAll(ep.AirDate, "-", ".")
             if dateStr != "" {
                 airDates[ep.EpisodeNumber] = dateStr
@@ -369,10 +306,6 @@ func getTMDBSeasonAirDates(imdbID string, season int) map[int]string {
     }
     return res.(map[int]string)
 }
-
-// ---------------------------------------------------------------------------
-// TMDB Original Title Resolution
-// ---------------------------------------------------------------------------
 
 func getTMDBOriginalTitle(imdbID string) string {
     if !useTMDB {
@@ -440,10 +373,6 @@ func getTMDBOriginalTitle(imdbID string) string {
     }
     return res.(string)
 }
-
-// ---------------------------------------------------------------------------
-// Dynamic Alternate Titles Resolution
-// ---------------------------------------------------------------------------
 
 func getTMDBAlternativeTitles(imdbID string, enableAltTitles bool, altTitleCountry string) ([]string, error) {
     if !useTMDB || !enableAltTitles {
@@ -575,7 +504,8 @@ func getTMDBAlternativeTitles(imdbID string, enableAltTitles bool, altTitleCount
                 }
             }
 
-            // P2.5 Fix: Removed IsLatinString(t) check to allow original non-Latin titles for matching
+            // P2.5 Fix: Kept non-Latin check removed to allow original non-Latin titles for MATCHING.
+            // They are filtered out of SEARCH queries in addon.txt.
             if isAllowed {
                 seen[t] = true
                 cleanList = append(cleanList, t)
@@ -593,10 +523,6 @@ func getTMDBAlternativeTitles(imdbID string, enableAltTitles bool, altTitleCount
     return res.([]string), nil
 }
 
-// ---------------------------------------------------------------------------
-// TMDB Title Translation Logic
-// ---------------------------------------------------------------------------
-
 func getTMDBTranslatedTitle(imdbID, preferredLanguage string) (string, error) {
     if !useTMDB || preferredLanguage == "" {
         return "", nil
@@ -604,7 +530,6 @@ func getTMDBTranslatedTitle(imdbID, preferredLanguage string) (string, error) {
 
     cacheKey := fmt.Sprintf("%s:%s", imdbID, preferredLanguage)
 
-    // Bug 2 Fix: Wrapped API call inside singleflight
     res, err, _ := transTitleSingleflight.Do(cacheKey, func() (interface{}, error) {
         if cached, ok := tmdbTransTitleCache.Get(cacheKey); ok {
             return cached, nil
@@ -687,10 +612,6 @@ func getTMDBTranslatedTitle(imdbID, preferredLanguage string) (string, error) {
     }
     return res.(string), nil
 }
-
-// ---------------------------------------------------------------------------
-// IMDb Metadata Lookup Provider
-// ---------------------------------------------------------------------------
 
 func imdbMetaProvider(id, preferredLanguage string, enableAltTitles bool, altTitleCountry string) (MetaProviderResponse, error) {
     parts := strings.Split(id, ":")
@@ -790,7 +711,6 @@ func imdbMetaProvider(id, preferredLanguage string, enableAltTitles bool, altTit
 
         _, _, origLang, _ = resolveTMDBID(tt)
 
-        // P3.4 Fix: Fetch bulk season air dates
         sInt, _ := strconv.Atoi(season)
         eInt, _ := strconv.Atoi(episode)
         if sInt > 0 && eInt > 0 {
@@ -801,7 +721,6 @@ func imdbMetaProvider(id, preferredLanguage string, enableAltTitles bool, altTit
         }
     }
 
-    // Inject Transliterations for non-Latin scripts
     translitName := Transliterate(originalName)
     if translitName != originalName && translitName != "" {
         isDup := false
@@ -871,10 +790,6 @@ func imdbMetaProvider(id, preferredLanguage string, enableAltTitles bool, altTit
         EpisodeAirDate:   airDate,
     }, nil
 }
-
-// ---------------------------------------------------------------------------
-// Cinemeta Metadata Lookup Provider (Fallback)
-// ---------------------------------------------------------------------------
 
 func cinemetaMetaProvider(id, contentType, preferredLanguage string, enableAltTitles bool, altTitleCountry string) (MetaProviderResponse, error) {
     parts := strings.Split(id, ":")
@@ -965,7 +880,6 @@ func cinemetaMetaProvider(id, contentType, preferredLanguage string, enableAltTi
 
         _, _, origLang, _ = resolveTMDBID(tt)
 
-        // P3.4 Fix: Fetch bulk season air dates
         sInt, _ := strconv.Atoi(season)
         eInt, _ := strconv.Atoi(episode)
         if sInt > 0 && eInt > 0 {
@@ -976,7 +890,6 @@ func cinemetaMetaProvider(id, contentType, preferredLanguage string, enableAltTi
         }
     }
 
-    // Inject Transliterations
     translitName := Transliterate(name)
     if translitName != name && translitName != "" {
         isDup := false
@@ -1033,10 +946,6 @@ func cinemetaMetaProvider(id, contentType, preferredLanguage string, enableAltTi
         EpisodeAirDate:   airDate,
     }, nil
 }
-
-// ---------------------------------------------------------------------------
-// Public Metadata Gateway Interface
-// ---------------------------------------------------------------------------
 
 func PublicMetaProvider(id, contentType, preferredLanguage string, enableAltTitles bool, altTitleCountry string) (MetaProviderResponse, error) {
     parts := strings.Split(id, ":")
