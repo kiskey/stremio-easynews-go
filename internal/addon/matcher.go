@@ -12,7 +12,6 @@ import (
 
 var translit = transliterator.NewTransliterator(nil)
 
-// Transliterate converts non-Latin scripts to Latin approximation.
 func Transliterate(s string) string {
     hasNonLatin := false
     for _, r := range s {
@@ -27,8 +26,6 @@ func Transliterate(s string) string {
     return translit.Transliterate(s, "en")
 }
 
-// IsLatinString checks if a string contains only Latin characters.
-// Updated to support Latin Extended-A/B and Latin Extended Additional (Vietnamese).
 func IsLatinString(s string) bool {
     for _, r := range s {
         if r > 0x1EFF {
@@ -38,39 +35,29 @@ func IsLatinString(s string) bool {
     return true
 }
 
-// GetAlternativeTitles generates sanitized and transliterated alternatives for a given title
 func GetAlternativeTitles(name string) []string {
     var alts []string
     return injectNormalizedAltTitle(name, alts)
 }
 
-// Static Low-Entropy Grammatical Stop Words Set for PN-SILEC Filtering
 var stopWords = map[string]bool{
-    // English
     "the": true, "a": true, "an": true, "and": true, "or": true,
     "of": true, "in": true, "on": true, "at": true, "to": true,
     "for": true, "with": true, "by": true, "from": true, "aka": true,
-    // French
     "le": true, "la": true, "les": true, "un": true, "une": true,
     "des": true, "du": true, "de": true, "et": true, "ou": true,
-    // Spanish
     "el": true, "los": true, "las": true, "un": true, "una": true,
     "y": true, "o": true, "del": true, "en": true,
-    // German
     "der": true, "die": true, "das": true, "den": true, "dem": true,
     "ein": true, "eine": true, "und": true, "oder": true, "von": true,
     "zu": true, "mit": true, "auf": true,
-    // Italian
     "il": true, "lo": true, "la": true, "i": true, "gli": true,
     "un": true, "una": true, "e": true, "di": true,
-    // Portuguese
     "o": true, "os": true, "as": true, "um": true, "uma": true,
     "e": true, "ou": true, "do": true, "da": true,
-    // Dutch
     "het": true, "een": true, "en": true, "of": true,
 }
 
-// Technical tags that should not trigger the single-word guardrail.
 var metadataWords = map[string]bool{
     "1080p": true, "720p": true, "2160p": true, "480p": true, "360p": true,
     "4k": true, "uhd": true, "bluray": true, "bdrip": true, "brrip": true,
@@ -106,14 +93,12 @@ var metadataWords = map[string]bool{
     "hk": true, "tw": true, "it": true, "es": true, "nl": true,
     "pl": true, "ru": true, "se": true, "no": true, "fi": true,
     "dk": true, "new": true, "full": true, "all": true,
-    // Editions & Variants
     "extended": true, "edition": true, "theatrical": true, "uncut": true,
     "uncensored": true, "remastered": true, "criterion": true,
     "director": true, "directors": true, "cut": true,
     "special": true, "deluxe": true, "limited": true,
     "anniversary": true, "collector": true, "collector's": true,
     "fan": true, "edit": true, "fanedit": true,
-    // Streaming Services
     "nflx": true, "netflix": true, "nf": true,
     "amzn": true, "amazon": true, "prime": true,
     "atvp": true, "appletv": true, "apple": true,
@@ -125,8 +110,6 @@ var metadataWords = map[string]bool{
     "stan": true, "bfi": true, "mubi": true, "sho": true, "tubi": true,
 }
 
-// sequelIndicators are words that strongly suggest a different franchise entry.
-// Removed common false positives: "last", "final", "next", "new"
 var sequelIndicators = map[string]bool{
     "part": true, "chapter": true, "episode": true, "season": true,
     "volume": true, "vol": true, "book": true, "returns": true,
@@ -136,7 +119,6 @@ var sequelIndicators = map[string]bool{
     "revolutions": true, "origins": true, "awakens": true,
 }
 
-// homoglyphClasses maps standard stylizations/leetspeak lookalikes to represent equivalence classes.
 var homoglyphClasses = map[rune][]rune{
     '0': {'0', 'o'},
     'o': {'0', 'o'},
@@ -185,7 +167,6 @@ var ignoredNumbers = map[string]bool{
 
 var seasonRangeRegex = regexp.MustCompile(`(?i)\b(?:s|season|seasons)\s*0*(\d+)\s*(?:-|to)\s*0*(\d+)\b`)
 
-// P3.3 Fix: Added roman numeral false positives
 var romanFalsePositives = map[string]bool{
     "mix": true, "dim": true, "vim": true, "civil": true,
     "maid": true, "dial": true, "midi": true, "id": true,
@@ -195,7 +176,7 @@ var romanFalsePositives = map[string]bool{
     "cd": true, "dc": true, "mc": true, "cm": true,
 }
 
-// P2.2 Fix: Abbreviation expansion map
+// H2 Fix: Exported abbreviation map function
 var abbreviationMap = map[string][]string{
     "dr":   {"doctor"},
     "st":   {"saint"},
@@ -206,17 +187,16 @@ var abbreviationMap = map[string][]string{
     "ft":   {"feat", "featuring"},
 }
 
-func expandAbbreviations(title string) string {
+func ExpandAbbreviations(title string) string {
     words := strings.Fields(strings.ToLower(title))
     for i, w := range words {
         if expansions, ok := abbreviationMap[w]; ok && len(expansions) > 0 {
-            words[i] = expansions[0] // Just use the first expansion for similarity
+            words[i] = expansions[0]
         }
     }
     return strings.Join(words, " ")
 }
 
-// isBlockedArchive checks if a torrent name is a compressed archive that Stremio cannot play
 func isBlockedArchive(name string) bool {
     lower := strings.ToLower(name)
     return strings.HasSuffix(lower, ".rar") ||
@@ -240,7 +220,6 @@ func stripLeadingArticles(s string) string {
     s = strings.TrimSpace(s)
     lower := strings.ToLower(s)
 
-    // Prefix articles
     prefixes := []string{"the ", "a ", "an ", "le ", "la ", "les ", "l'", "der ", "die ", "das ", "el ", "los ", "las ", "il ", "lo ", "i ", "gli ", "o ", "os ", "as ", "de ", "het "}
     for _, art := range prefixes {
         if strings.HasPrefix(lower, art) {
@@ -248,11 +227,9 @@ func stripLeadingArticles(s string) string {
         }
     }
 
-    // Suffix-style articles (e.g., "Avengers, The")
     suffixes := []string{", the", ", a", ", an", ", le", ", la", ", les", ", der", ", die", ", das", ", el", ", los", ", las", ", il", ", lo", ", la", ", de", ", het"}
     for _, suff := range suffixes {
         if strings.HasSuffix(lower, suff) {
-            // Move suffix to prefix
             return strings.TrimSpace(suff[2:]) + " " + strings.TrimSpace(s[:len(s)-len(suff)])
         }
     }
@@ -260,7 +237,6 @@ func stripLeadingArticles(s string) string {
     return s
 }
 
-// cleanWord converts a string to lowercase and removes non-alphanumeric characters.
 func cleanWord(w string) string {
     hasUpperOrNonAlpha := false
     for i := 0; i < len(w); i++ {
@@ -286,7 +262,6 @@ func cleanWord(w string) string {
     return string(buf)
 }
 
-// isYearNumber checks if a string is a standard 4-digit release year
 func isYearNumber(s string) bool {
     if len(s) != 4 {
         return false
@@ -298,8 +273,6 @@ func isYearNumber(s string) bool {
     return n >= 1880 && n <= 2100
 }
 
-// isTechnicalToken performs an allocation-free dynamic check to identify season, episode,
-// and pack-specific serialization tokens, allowing them to safely bypass the guardrail.
 func isTechnicalToken(s string) bool {
     if metadataWords[s] || stopWords[s] {
         return true
@@ -345,8 +318,6 @@ func isTechnicalToken(s string) bool {
     return false
 }
 
-// passTitleGuardrail prevents single-word titles (e.g. "Up", "It") from matching
-// unrelated multi-word torrents (e.g. "Upgraded", "Italian").
 func passTitleGuardrail(targetTitle, parsedTitle string) bool {
     cleanTarget := strings.Trim(strings.ToLower(targetTitle), " .-_[]()/\\")
     cleanParsed := strings.Trim(strings.ToLower(parsedTitle), " .-_[]()/\\")
@@ -364,7 +335,6 @@ func passTitleGuardrail(targetTitle, parsedTitle string) bool {
     targetWords := strings.Fields(targetNoArt)
     parsedWords := strings.Fields(parsedNoArt)
 
-    // ── UPGRADE: Substantive Word Guardrail ──
     targetWordSet := make(map[string]bool)
     for _, w := range targetWords {
         targetWordSet[cleanWord(w)] = true
@@ -387,7 +357,6 @@ func passTitleGuardrail(targetTitle, parsedTitle string) bool {
         return false
     }
 
-    // ── UPGRADE: PN-SILEC Multi-Word Franchise Leakage Guardrail ──
     if len(targetWords) > 1 && len(parsedWords) > len(targetWords) {
         startsSame := true
         for i := 0; i < len(targetWords); i++ {
@@ -416,7 +385,6 @@ func passTitleGuardrail(targetTitle, parsedTitle string) bool {
         }
     }
 
-    // ── Standard Single-Word Title Guardrail ──
     if len(targetWords) == 1 {
         singleWord := cleanWord(targetWords[0])
         if len(parsedWords) > 1 {
@@ -444,7 +412,6 @@ func getHomoglyphRepresentations(r rune) []rune {
     return []rune{r}
 }
 
-// Global recycled pool for fast map reuse
 var uint64MapPool = sync.Pool{
     New: func() interface{} {
         return make(map[uint64]struct{}, 64)
@@ -457,8 +424,6 @@ func clearMap(m map[uint64]struct{}) {
     }
 }
 
-// OverlapCoefficient computes the overlap coefficient between two strings
-// using multi-representation homoglyph character bigrams.
 func OverlapCoefficient(s1, s2 string) float64 {
     if s1 == s2 {
         return 1.0
@@ -751,9 +716,8 @@ func getTitleSimilarity(tmdbTitle, torrentName string) float64 {
     cleanTmdb := strings.Trim(strings.ToLower(tmdbTitle), " .-_[]()/\\")
     cleanParsed := strings.Trim(strings.ToLower(parsed.Title), " .-_[]()/\\")
 
-    // P2.2 Fix: Expand abbreviations
-    cleanTmdb = expandAbbreviations(cleanTmdb)
-    cleanParsed = expandAbbreviations(cleanParsed)
+    cleanTmdb = ExpandAbbreviations(cleanTmdb)
+    cleanParsed = ExpandAbbreviations(cleanParsed)
 
     cleanTmdb = normalizeNumbersInTitle(cleanTmdb)
     cleanParsed = normalizeNumbersInTitle(cleanParsed)
@@ -765,7 +729,6 @@ func getTitleSimilarity(tmdbTitle, torrentName string) float64 {
     oc := OverlapCoefficient(cleanTmdb, cleanParsed)
     posOc := tokenPositionOverlap(cleanTmdb, cleanParsed)
 
-    // Blend bigram overlap with positional word overlap
     oc = (oc * 0.7) + (posOc * 0.3)
 
     cleanTmdbNoArt := stripLeadingArticles(cleanTmdb)
@@ -784,7 +747,6 @@ func getTitleSimilarity(tmdbTitle, torrentName string) float64 {
     return oc
 }
 
-// stripDiacritics maps standard Latin-1 and advanced unicode diacritics to ASCII base characters
 func stripDiacritics(s string) string {
     var replacer = strings.NewReplacer(
         "ā", "a", "á", "a", "à", "a", "ä", "a", "â", "a", "ã", "a", "å", "a",
@@ -804,7 +766,6 @@ func stripDiacritics(s string) string {
     return replacer.Replace(s)
 }
 
-// injectNormalizedAltTitle adds the un-accented ASCII representation to AltTitles if it differs from the primary name
 func injectNormalizedAltTitle(name string, alts []string) []string {
     normalized := stripDiacritics(name)
     if normalized != name {
