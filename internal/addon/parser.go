@@ -106,7 +106,27 @@ var bracketRegex = regexp.MustCompile(`\[.*?[^\w\s-].*?\]`)
 var rangeRegex = regexp.MustCompile(`(?i)\b(?:e|ep|episode)?\s*(\d+)\s*(?:-|to)\s*(?:e|ep|episode)?\s*(\d+)\b`)
 var seasonFolderRegex = regexp.MustCompile(`(?i)\b(?:s|season|series|vol|volume|book|chapter)\s*0*(\d+)\b`)
 var dateEpisodeRegex = regexp.MustCompile(`(?i)\b(\d{4})[\.\-_ ](\d{2})[\.\-_ ](\d{2})\b`)
-var packRegex = regexp.MustCompile(`(?i)\b(complete|complete\s+series|complete\s+collection|season\s+complete|pack|bundle)\b`)
+
+// Bug 4 Fix: Pre-compiled Edition Patterns to prevent regex compilation inside parse loop
+var compiledEditionPatterns = []struct {
+    Re   *regexp.Regexp
+    Name string
+}{
+    {regexp.MustCompile(`(?i)director'?s?\s*cut`), "Director's Cut"},
+    {regexp.MustCompile(`(?i)extended\s*(?:edition|cut)?`), "Extended"},
+    {regexp.MustCompile(`(?i)theatrical`), "Theatrical"},
+    {regexp.MustCompile(`(?i)uncut`), "Uncut"},
+    {regexp.MustCompile(`(?i)uncensored`), "Uncensored"},
+    {regexp.MustCompile(`(?i)remastered`), "Remastered"},
+    {regexp.MustCompile(`(?i)criterion`), "Criterion"},
+    {regexp.MustCompile(`(?i)imax`), "IMAX"},
+}
+
+// Refinement 2 Fix: Tightened packRegex to prevent false positives like "Complete Unknown"
+var packRegex = regexp.MustCompile(`(?i)\b(complete\s+(?:series|collection|season)|season\s+complete|pack|bundle)\b`)
+
+// Bug 3 Fix: Extracted regex for natural sort to package-level to prevent O(N log N) compilation
+var naturalCompareRegex = regexp.MustCompile(`\d+`)
 
 // Low-Allocation pre-defined filters deconstructed from Perl badges.json to RE2 standard.
 var filtersDef = []struct {
@@ -433,19 +453,10 @@ func RobustParseInfo(title string, fallbackSeason int) *ParseResult {
         result.IsRepack = true
     }
 
-    editionPatterns := map[string]string{
-        `director'?s?\s*cut`: "Director's Cut",
-        `extended\s*(?:edition|cut)?`: "Extended",
-        `theatrical`: "Theatrical",
-        `uncut`: "Uncut",
-        `uncensored`: "Uncensored",
-        `remastered`: "Remastered",
-        `criterion`: "Criterion",
-        `imax`: "IMAX",
-    }
-    for pattern, name := range editionPatterns {
-        if matched, _ := regexp.MatchString("(?i)"+pattern, clean); matched {
-            result.Edition = name
+    // Bug 4 Fix: Iterate over pre-compiled edition patterns
+    for _, p := range compiledEditionPatterns {
+        if p.Re.MatchString(clean) {
+            result.Edition = p.Name
             break
         }
     }
@@ -564,14 +575,13 @@ func isDecimalDot(s string, i int) bool {
     return left >= '0' && left <= '9' && right >= '0' && right <= '9'
 }
 
-// naturalCompare extracts numbers from strings, pads them, and compares to ensure S01E02 < S01E10
+// Bug 3 Fix: naturalCompare now uses package-level regex
 func naturalCompare(a, b string) bool {
-    re := regexp.MustCompile(`\d+`)
-    padA := re.ReplaceAllStringFunc(a, func(m string) string {
+    padA := naturalCompareRegex.ReplaceAllStringFunc(a, func(m string) string {
         n, _ := strconv.Atoi(m)
         return fmt.Sprintf("%020d", n)
     })
-    padB := re.ReplaceAllStringFunc(b, func(m string) string {
+    padB := naturalCompareRegex.ReplaceAllStringFunc(b, func(m string) string {
         n, _ := strconv.Atoi(m)
         return fmt.Sprintf("%020d", n)
     })
