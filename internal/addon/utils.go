@@ -104,10 +104,17 @@ func SanitizeTitle(title string) string {
 
 func MatchesTitle(title, query string, strict bool) bool {
     if !strict {
-        // Lenient Fallback: Case-insensitive substring matching when strict matching is disabled
-        sanitizedTitle := SanitizeTitle(title)
+        // P1.2 Fix: Guardrail lenient mode to prevent catastrophic false positives
+        parsed := RobustParseInfo(title, 0)
+        if parsed == nil || parsed.Title == "" {
+            return strings.Contains(strings.ToLower(title), strings.ToLower(query))
+        }
+        if !passTitleGuardrail(query, parsed.Title) {
+            return false
+        }
+        sanitizedTitle := SanitizeTitle(parsed.Title)
         sanitizedQuery := SanitizeTitle(query)
-        return strings.Contains(sanitizedTitle, sanitizedQuery) || strings.Contains(sanitizedQuery, sanitizedTitle)
+        return strings.Contains(sanitizedTitle, sanitizedQuery)
     }
 
     // Parse the raw title first using our robust parser
@@ -251,6 +258,43 @@ func BuildSearchQuery(contentType string, meta MetaProviderResponse) string {
     default:
         return meta.Name + exclusions
     }
+}
+
+// P1.3 Fix: BuildSearchQueryVariants generates multiple query formats per title
+func BuildSearchQueryVariants(contentType string, meta MetaProviderResponse) []string {
+    var variants []string
+    exclusions := " !sample !trailer !passwd !password !preview"
+
+    switch contentType {
+    case "movie":
+        if meta.Year > 0 {
+            variants = append(variants,
+                fmt.Sprintf("%s %d%s", meta.Name, meta.Year, exclusions),
+                fmt.Sprintf("%s (%d)%s", meta.Name, meta.Year, exclusions),
+            )
+        }
+        variants = append(variants, meta.Name+exclusions)
+    case "series":
+        if meta.EpisodeAirDate != "" {
+            variants = append(variants, fmt.Sprintf("%s %s%s", meta.Name, meta.EpisodeAirDate, exclusions))
+        }
+        if meta.Season != "" && meta.Episode != "" {
+            s, _ := strconv.Atoi(meta.Season)
+            e, _ := strconv.Atoi(meta.Episode)
+            if s > 0 && e > 0 {
+                variants = append(variants,
+                    fmt.Sprintf("%s S%02dE%02d%s", meta.Name, s, e, exclusions),
+                    fmt.Sprintf("%s %dx%02d%s", meta.Name, s, e, exclusions),
+                )
+            }
+        }
+        if len(variants) == 0 {
+            variants = append(variants, meta.Name+exclusions)
+        }
+    default:
+        variants = append(variants, meta.Name+exclusions)
+    }
+    return variants
 }
 
 // ---------------------------------------------------------------------------
