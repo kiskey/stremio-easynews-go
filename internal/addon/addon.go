@@ -30,6 +30,9 @@ func isMultiWord(title string) bool {
 
 type SortMeta struct {
     QualityScore     int
+    SourceScore      int     // 8=Remux, 7=BluRay, 6=WEB-DL, 5=HDTV, 4=HDRip, 3=DVDRip, 2=CAM, 1=TS, 0=unknown
+    HDRScore         int     // 4=DV, 3=HDR10+, 2=HDR10, 1=HDR, 0=SDR
+    CodecScore       int     // 3=AV1, 2=HEVC, 1=AVC, 0=other
     SizeUnit         string
     SizeValue        float64
     DateMs           int64
@@ -228,7 +231,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
         return StreamHandlerResult{Streams: []Stream{}}, nil
     }
 
-    cacheKey := fmt.Sprintf("%s:v5:user=%s:strict=%s:lang=%s:sort=%s:qualities=%s:maxPerQuality=%s:maxSize=%s:enableAlt=%s:altCountry=%s",
+    cacheKey := fmt.Sprintf("%s:v6:user=%s:strict=%s:lang=%s:sort=%s:qualities=%s:maxPerQuality=%s:maxSize=%s:enableAlt=%s:altCountry=%s",
         id,
         config.Username,
         config.StrictTitleMatching,
@@ -305,6 +308,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
         }
     }
 
+    // P1.3 Fix: Use BuildSearchQueryVariants
     buildQueries := func(withYear bool) []string {
         var queries []string
         for _, titleVariant := range allTitles {
@@ -316,7 +320,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
             if !withYear {
                 m.Year = 0
             }
-            queries = append(queries, BuildSearchQuery(contentType, m))
+            queries = append(queries, BuildSearchQueryVariants(contentType, m)...)
         }
         return queries
     }
@@ -535,8 +539,17 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 
                     if (parsedInfo.Season > 0 && parsedInfo.Season != targetSeason) ||
                         (parsedInfo.Episode > 0 && !episodeMatches && !hasRange && !isPack && !parsedInfo.IsPack) {
-                        rejectedTitle++
-                        continue
+                        
+                        // P1.5 Fix: Accept absolute-numbered episodes when episode number matches target
+                        isAbsoluteMatch := false
+                        if parsedInfo.Season == 0 && parsedInfo.Episode > 0 && parsedInfo.Episode == targetEpisode {
+                            isAbsoluteMatch = true
+                        }
+
+                        if !isAbsoluteMatch {
+                            rejectedTitle++
+                            continue
+                        }
                     }
 
                     if parsedInfo.Season == 0 && parsedInfo.Episode == 0 && parsedInfo.Date == "" && !isPack && !parsedInfo.IsPack {
@@ -610,8 +623,15 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
         totalFilesSeen, len(streams), rejectedSample, rejectedDuplicate, rejectedTitle)
 
     // -----------------------------------------------------------------------
-    // Low-Latency Sorting Pipeline
+    // Low-Latency Sorting Pipeline (P1.4 Fix: Integrated SourceScore/HDRScore/CodecScore)
     // -----------------------------------------------------------------------
+
+    calculateTotalScore := func(a *SortMeta) int {
+        if a == nil {
+            return 0
+        }
+        return a.QualityScore*1000 + a.SourceScore*100 + a.HDRScore*10 + a.CodecScore
+    }
 
     if len(streams) > 0 {
         if sortingPreference == "language_first" && preferredLang != "" {
@@ -634,8 +654,11 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
                 if b.SortMeta == nil {
                     return true
                 }
-                if a.SortMeta.QualityScore != b.SortMeta.QualityScore {
-                    return a.SortMeta.QualityScore > b.SortMeta.QualityScore
+                
+                aTotal := calculateTotalScore(a.SortMeta)
+                bTotal := calculateTotalScore(b.SortMeta)
+                if aTotal != bTotal {
+                    return aTotal > bTotal
                 }
                 
                 aScore := 0
@@ -677,8 +700,8 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
                     if sizeCompare != 0 {
                         return sizeCompare < 0
                     }
-                    if a.QualityScore != b.QualityScore {
-                        return a.QualityScore > b.QualityScore
+                    if calculateTotalScore(a) != calculateTotalScore(b) {
+                        return calculateTotalScore(a) > calculateTotalScore(b)
                     }
                     if a.HasPreferredLang != b.HasPreferredLang {
                         return a.HasPreferredLang
@@ -688,8 +711,8 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
                     if a.DateMs != b.DateMs {
                         return a.DateMs > b.DateMs
                     }
-                    if a.QualityScore != b.QualityScore {
-                        return a.QualityScore > b.QualityScore
+                    if calculateTotalScore(a) != calculateTotalScore(b) {
+                        return calculateTotalScore(a) > calculateTotalScore(b)
                     }
                     if a.HasPreferredLang != b.HasPreferredLang {
                         return a.HasPreferredLang
@@ -699,13 +722,13 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
                     if a.HasPreferredLang != b.HasPreferredLang {
                         return a.HasPreferredLang
                     }
-                    if a.QualityScore != b.QualityScore {
-                        return a.QualityScore > b.QualityScore
+                    if calculateTotalScore(a) != calculateTotalScore(b) {
+                        return calculateTotalScore(a) > calculateTotalScore(b)
                     }
                     return CompareSizeMeta(a, b) < 0
                 default: // quality_first
-                    if a.QualityScore != b.QualityScore {
-                        return a.QualityScore > b.QualityScore
+                    if calculateTotalScore(a) != calculateTotalScore(b) {
+                        return calculateTotalScore(a) > calculateTotalScore(b)
                     }
                     
                     aScore := 0
@@ -889,11 +912,12 @@ func hasAll(haystack, needles []string) bool {
 }
 
 // ---------------------------------------------------------------------------
-// Single Stream Resource Mapping
+// Single Stream Resource Mapping (P1.4 & P2.3 Fix: Extended SortMeta & Binge Group)
 // ---------------------------------------------------------------------------
 
 func MapStream(duration, size, fullResolution, title, fileExtension string, videoSize int64, url string, file api.FileData, preferredLang string, parsedInfo *ParseResult) Stream {
     quality := GetQuality(title, fullResolution)
+    badges := FormatBadges(title)
 
     publishDate := ""
     if file.Ts > 0 {
@@ -922,8 +946,33 @@ func MapStream(duration, size, fullResolution, title, fileExtension string, vide
     }
     hasPreferredLang := preferredLang != "" && file.Alangs != nil && contains(file.Alangs, preferredLang)
 
+    // P1.4 Fix: Calculate SourceScore, HDRScore, CodecScore
+    sourceScore := 0
+    if strings.Contains(badges, "Remux") { sourceScore = 8 }
+    else if strings.Contains(badges, "BluRay") { sourceScore = 7 }
+    else if strings.Contains(badges, "WEB-DL") { sourceScore = 6 }
+    else if strings.Contains(badges, "HDTV") { sourceScore = 5 }
+    else if strings.Contains(badges, "HDRip") { sourceScore = 4 }
+    else if strings.Contains(badges, "DVDRip") { sourceScore = 3 }
+    else if strings.Contains(badges, "CAM") { sourceScore = 2 }
+    else if strings.Contains(badges, "TS") { sourceScore = 1 }
+
+    hdrScore := 0
+    if strings.Contains(badges, "DV") { hdrScore = 4 }
+    else if strings.Contains(badges, "HDR10+") { hdrScore = 3 }
+    else if strings.Contains(badges, "HDR10") { hdrScore = 2 }
+    else if strings.Contains(badges, "HDR") { hdrScore = 1 }
+
+    codecScore := 0
+    if strings.Contains(badges, "H265 HEVC") { codecScore = 2 }
+    else if strings.Contains(badges, "H264 AVC") { codecScore = 1 }
+    // AV1 detection could be added here if badges supported it
+
     sortMeta := &SortMeta{
         QualityScore:     QualityScoreFromLabel(quality),
+        SourceScore:      sourceScore,
+        HDRScore:         hdrScore,
+        CodecScore:       codecScore,
         SizeUnit:         sizeUnit,
         SizeValue:        sizeValue,
         DateMs:           dateMs,
@@ -946,7 +995,13 @@ func MapStream(duration, size, fullResolution, title, fileExtension string, vide
         sort.Strings(sortedLangs)
         bingeLang = strings.Join(sortedLangs, ",")
     }
-    bingeGroup := fmt.Sprintf("easynews-plus-plus|%s|%s|%s", quality, bingeLang, fileExtension)
+
+    // P2.3 Fix: Include ReleaseGroup in Binge Group
+    releaseGroup := "unknown"
+    if parsedInfo != nil && parsedInfo.ReleaseGroup != "" {
+        releaseGroup = parsedInfo.ReleaseGroup
+    }
+    bingeGroup := fmt.Sprintf("easynews-plus-plus|%s|%s|%s|%s", quality, bingeLang, fileExtension, releaseGroup)
 
     name := "Easynews++"
     if quality != "" {
@@ -955,7 +1010,7 @@ func MapStream(duration, size, fullResolution, title, fileExtension string, vide
 
     description := fmt.Sprintf("%s%s\n%s\n🕛 %s\n📦 %s %s\n%s",
         title, fileExtension,
-        FormatBadges(title),
+        badges,
         coalesce(duration, "unknown duration"),
         coalesce(size, "unknown size"),
         publishDate,
