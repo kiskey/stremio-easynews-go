@@ -41,21 +41,28 @@ func GetAlternativeTitles(name string) []string {
 }
 
 var stopWords = map[string]bool{
+    // English
     "the": true, "a": true, "an": true, "and": true, "or": true,
     "of": true, "in": true, "on": true, "at": true, "to": true,
     "for": true, "with": true, "by": true, "from": true, "aka": true,
-    "le": true, "la": true, "les": true, "un": true, "une": true,
+    // French
+    "le": true, "la": true, "les": true, "une": true,
     "des": true, "du": true, "de": true, "et": true, "ou": true,
+    // Spanish
     "el": true, "los": true, "las": true, "un": true, "una": true,
-    "y": true, "o": true, "del": true, "en": true,
+    "y": true, "del": true, "en": true,
+    // German
     "der": true, "die": true, "das": true, "den": true, "dem": true,
     "ein": true, "eine": true, "und": true, "oder": true, "von": true,
     "zu": true, "mit": true, "auf": true,
-    "il": true, "lo": true, "la": true, "i": true, "gli": true,
-    "un": true, "una": true, "e": true, "di": true,
+    // Italian
+    "il": true, "lo": true, "i": true, "gli": true,
+    "e": true, "di": true,
+    // Portuguese
     "o": true, "os": true, "as": true, "um": true, "uma": true,
-    "e": true, "ou": true, "do": true, "da": true,
-    "het": true, "een": true, "en": true, "of": true,
+    "do": true, "da": true,
+    // Dutch
+    "het": true, "een": true,
 }
 
 var metadataWords = map[string]bool{
