@@ -24,7 +24,7 @@ var (
     veryShortDurRe    = regexp.MustCompile(`^[0-5]m`)
     separatorsRe      = regexp.MustCompile(`[\.\-_:\s]+`)
     bracketsRe        = regexp.MustCompile(`[\[\]\(\){}]`)
-    nonAlphanumericRe = regexp.MustCompile(`[^\w\s\x{00C0}-\x{024F}\x{1E00}-\x{1EFF}]`) // Fixed: Allows Latin Extended-A/B and Vietnamese
+    nonAlphanumericRe = regexp.MustCompile(`[^\w\s\x{00C0}-\x{024F}\x{1E00}-\x{1EFF}]`)
     seasonEpisodeRe   = regexp.MustCompile(`(?i)(s\d+e\d+|\b\d+x\d+\b)`)
     yearPatternRe     = regexp.MustCompile(`\b(19\d{2}|20\d{2})\b`)
     fourDigitYearRe   = regexp.MustCompile(`\b(\d{4})\b`)
@@ -81,7 +81,6 @@ func IsBadVideo(file api.FileData) bool {
 // Title Sanitization
 // ---------------------------------------------------------------------------
 
-// Precompiled replacer collapses 9 sequential string sweeps into a single-pass, single-allocation statement.
 var titleReplacer = strings.NewReplacer(
     "ä", "ae", "ö", "oe", "ü", "ue", "ß", "ss",
     "Ä", "Ae", "Ö", "Oe", "Ü", "Ue", "&", "and",
@@ -117,19 +116,15 @@ func MatchesTitle(title, query string, strict bool) bool {
         return strings.Contains(sanitizedTitle, sanitizedQuery)
     }
 
-    // Parse the raw title first using our robust parser
     parsed := RobustParseInfo(title, 0)
     if parsed == nil || parsed.Title == "" {
         return false
     }
 
-    // ── UPGRADE: PN-SILEC Franchise Leakage Guardrail ──
-    // Pass the parsed title instead of the raw filename!
     if !passTitleGuardrail(query, parsed.Title) {
         return false
     }
 
-    // Perform robust, homoglyph-aware title similarity assessment
     similarity := getTitleSimilarity(query, title)
     return similarity >= 0.80
 }
@@ -154,7 +149,6 @@ func CreateStreamUrl(downURL string, dlFarm string, dlPort int, username, passwo
         effectiveBaseUrl = os.Getenv("ADDON_BASE_URL")
     }
 
-    // Safeguard: Escape any raw spaces in file paths before constructing target URLs to prevent parsing failures
     sanitizedFilePath := strings.ReplaceAll(filePath, " ", "%20")
 
     if effectiveBaseUrl == "" {
@@ -172,7 +166,6 @@ func CreateStreamUrl(downURL string, dlFarm string, dlPort int, username, passwo
     fullUrl := fmt.Sprintf("%s/%s/%d/%s", downURL, dlFarm, dlPort, sanitizedFilePath)
     authUrl := fmt.Sprintf("%s?u=%s&p=%s", fullUrl, url.QueryEscape(username), url.QueryEscape(password))
     
-    // Optimized: Uses RawURLEncoding (unpadded) to match Node's 'base64url' output exactly, preventing player URL parsing errors
     encodedUrl := base64.RawURLEncoding.EncodeToString([]byte(authUrl))
     
     fileName := path.Base(filePath)
@@ -189,20 +182,18 @@ func CreateStreamPath(file api.FileData) string {
 }
 
 // ---------------------------------------------------------------------------
-// Quality Processing (Leverages releasetitleparser with local fallbacks)
+// Quality Processing
 // ---------------------------------------------------------------------------
 
 func GetQuality(title string, fallbackResolution string) string {
     parsed := RobustParseInfo(title, 0)
     if parsed != nil && parsed.Quality != "" && parsed.Quality != "sd" {
-        // Map common format of "4k" to uppercase "4K" to match stream naming style
         if parsed.Quality == "4k" {
             return "4K"
         }
         return parsed.Quality
     }
 
-    // Zero-Allocation Hot Path Match: No string.ToLower() dynamic heap allocation
     for _, p := range fallbackQualityPatterns {
         if p.re.MatchString(title) {
             return p.quality
@@ -210,7 +201,6 @@ func GetQuality(title string, fallbackResolution string) string {
     }
 
     if fallbackResolution != "" {
-        // Allocation-Free parsing using direct Boyer-Moore primitive substring scans
         cleanRes := strings.ReplaceAll(strings.ToLower(fallbackResolution), " ", "")
         if strings.Contains(cleanRes, "3840x2160") || strings.Contains(cleanRes, "2160p") {
             return "4K"
@@ -227,7 +217,7 @@ func GetQuality(title string, fallbackResolution string) string {
 }
 
 // ---------------------------------------------------------------------------
-// Clean, Standard Solr Query Builders (100% Strict Node.js Parity)
+// Clean, Standard Solr Query Builders
 // ---------------------------------------------------------------------------
 
 func BuildSearchQuery(contentType string, meta MetaProviderResponse) string {
@@ -241,7 +231,6 @@ func BuildSearchQuery(contentType string, meta MetaProviderResponse) string {
         return meta.Name + exclusions
 
     case "series":
-        // Gap A Fix: Prioritize daily show air dates if available
         if meta.EpisodeAirDate != "" {
             return fmt.Sprintf("%s %s%s", meta.Name, meta.EpisodeAirDate, exclusions)
         }
@@ -260,7 +249,7 @@ func BuildSearchQuery(contentType string, meta MetaProviderResponse) string {
     }
 }
 
-// P1.3 Fix: BuildSearchQueryVariants generates multiple query formats per title
+// BuildSearchQueryVariants generates multiple query formats per title
 func BuildSearchQueryVariants(contentType string, meta MetaProviderResponse) []string {
     var variants []string
     exclusions := " !sample !trailer !passwd !password !preview"
@@ -276,7 +265,12 @@ func BuildSearchQueryVariants(contentType string, meta MetaProviderResponse) []s
         variants = append(variants, meta.Name+exclusions)
     case "series":
         if meta.EpisodeAirDate != "" {
+            // M1 Fix: Added YYYY-MM-DD variant
             variants = append(variants, fmt.Sprintf("%s %s%s", meta.Name, meta.EpisodeAirDate, exclusions))
+            dashDate := strings.ReplaceAll(meta.EpisodeAirDate, ".", "-")
+            if dashDate != meta.EpisodeAirDate {
+                variants = append(variants, fmt.Sprintf("%s %s%s", meta.Name, dashDate, exclusions))
+            }
         }
         if meta.Season != "" && meta.Episode != "" {
             s, _ := strconv.Atoi(meta.Season)
