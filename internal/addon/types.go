@@ -42,4 +42,5 @@ type MetaProviderResponse struct {
     Season           string
     Episode          string
     OriginalLanguage string
+    EpisodeAirDate   string
 }
