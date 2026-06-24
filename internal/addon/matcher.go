@@ -186,7 +186,6 @@ var abbreviationMap = map[string][]string{
     "ft":   {"feat", "featuring"},
 }
 
-// Issue #2 Fix: Strip trailing punctuation before abbreviation lookup
 func ExpandAbbreviations(title string) string {
     words := strings.Fields(strings.ToLower(title))
     for i, w := range words {
