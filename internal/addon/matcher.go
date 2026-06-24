@@ -13,7 +13,6 @@ import (
 var translit = transliterator.NewTransliterator(nil)
 
 // Transliterate converts non-Latin scripts to Latin approximation.
-// Returns the original string if it's already Latin.
 func Transliterate(s string) string {
     hasNonLatin := false
     for _, r := range s {
@@ -29,9 +28,10 @@ func Transliterate(s string) string {
 }
 
 // IsLatinString checks if a string contains only Latin characters.
+// Updated to support Latin Extended-A/B and Latin Extended Additional (Vietnamese).
 func IsLatinString(s string) bool {
     for _, r := range s {
-        if r > unicode.MaxASCII {
+        if r > 0x1EFF {
             return false
         }
     }
@@ -88,6 +88,11 @@ var metadataWords = map[string]bool{
     "kannada": true, "bengali": true, "marathi": true, "punjabi": true,
     "english": true, "spanish": true, "french": true, "italic": true,
     "russian": true, "korean": true, "japanese": true, "chinese": true,
+    "german": true, "dutch": true, "swedish": true, "norwegian": true,
+    "danish": true, "finnish": true, "polish": true, "czech": true,
+    "greek": true, "turkish": true, "arabic": true, "hebrew": true,
+    "thai": true, "vietnamese": true, "indonesian": true, "malay": true,
+    "mandarin": true, "cantonese": true,
     "51": true, "71": true, "20": true, "10bit": true, "remux": true,
     "3d": true, "sdr": true, "gb": true, "mb": true, "kb": true,
     "web": true, "dl": true, "hd": true,
@@ -108,9 +113,20 @@ var metadataWords = map[string]bool{
     "special": true, "deluxe": true, "limited": true,
     "anniversary": true, "collector": true, "collector's": true,
     "fan": true, "edit": true, "fanedit": true,
+    // Streaming Services
+    "nflx": true, "netflix": true, "nf": true,
+    "amzn": true, "amazon": true, "prime": true,
+    "atvp": true, "appletv": true, "apple": true,
+    "dsnp": true, "disney": true,
+    "hmax": true, "hbomax": true, "hbo": true, "max": true,
+    "hulu": true, "pcok": true, "peacock": true,
+    "pmtp": true, "pamp": true, "paramount": true,
+    "cr": true, "crunchyroll": true, "crunch": true,
+    "stan": true, "bfi": true, "mubi": true, "sho": true, "tubi": true,
 }
 
 // sequelIndicators are words that strongly suggest a different franchise entry.
+// Removed common false positives: "last", "final", "next", "new"
 var sequelIndicators = map[string]bool{
     "part": true, "chapter": true, "episode": true, "season": true,
     "volume": true, "vol": true, "book": true, "returns": true,
@@ -118,7 +134,6 @@ var sequelIndicators = map[string]bool{
     "fallout": true, "crusade": true, "dynasty": true, "empire": true,
     "revenge": true, "resurrection": true, "reloaded": true,
     "revolutions": true, "origins": true, "awakens": true,
-    "last": true, "final": true, "next": true, "new": true,
 }
 
 // homoglyphClasses maps standard stylizations/leetspeak lookalikes to represent equivalence classes.
