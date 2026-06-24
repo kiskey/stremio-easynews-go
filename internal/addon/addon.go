@@ -1,6 +1,7 @@
 package addon
 
 import (
+    "context"
     "encoding/base64"
     "fmt"
     "net/url"
@@ -38,7 +39,6 @@ type AddonConfig struct {
     UILanguage           string `json:"uiLanguage"`
 }
 
-// Fixed: Using curly braces for struct initialization
 var defaultConfig = AddonConfig{
     StrictTitleMatching:  "true",
     EnableAltTitles:      "true",
@@ -192,7 +192,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
         return StreamHandlerResult{Streams: []Stream{}}, nil
     }
 
-    cacheKey := fmt.Sprintf("%s:v9:user=%s:strict=%s:lang=%s:sort=%s:qualities=%s:maxPerQuality=%s:maxSize=%s:enableAlt=%s:altCountry=%s",
+    cacheKey := fmt.Sprintf("%s:v10:user=%s:strict=%s:lang=%s:sort=%s:qualities=%s:maxPerQuality=%s:maxSize=%s:enableAlt=%s:altCountry=%s",
         id,
         config.Username,
         config.StrictTitleMatching,
@@ -333,6 +333,9 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
         searchConcurrency = 1
     }
     totalMaxResults := shared.ParseIntEnv("TOTAL_MAX_RESULTS", 500)
+    
+    // Performance Fix: Early exit threshold to prevent waiting for 14 queries when we already have enough results.
+    earlyExitThreshold := 20 
 
     type searchResult struct {
         query  string
@@ -344,11 +347,15 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
     totalFoundResults := 0
 
     runSearchPhase := func(queries []string) error {
+        // Context allows us to cancel in-flight HTTP requests the moment we hit our threshold
+        ctx, cancel := context.WithCancel(context.Background())
+        defer cancel()
+
         var g errgroup.Group
         sem := make(chan struct{}, searchConcurrency)
 
         for _, query := range queries {
-            if totalFoundResults >= totalMaxResults {
+            if totalFoundResults >= earlyExitThreshold {
                 break
             }
 
@@ -364,10 +371,14 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
                 }()
 
                 opts := api.SearchOptions{Query: query}
-                res, err := easynewsAPI.SearchAll(opts)
+                res, err := easynewsAPI.SearchAll(ctx, opts)
                 if err != nil {
+                    if ctx.Err() != nil {
+                        return nil // Suppress error if we intentionally cancelled
+                    }
                     addonLogger.Error("Easynews Solr search failed for query '%s': %v", query, err)
                     if IsAuthError(err) {
+                        cancel()
                         return err
                     }
                     return nil
@@ -376,26 +387,33 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
                 if len(res.Data) > 0 {
                     resultsMu.Lock()
                     allSearchResults = append(allSearchResults, searchResult{query: query, result: res})
+                    
+                    // Update unique hashes immediately for early exit calculation
+                    uniqueHashes := make(map[string]struct{})
+                    for _, sr := range allSearchResults {
+                        for _, f := range sr.result.Data {
+                            uniqueHashes[f.GetHash()] = struct{}{}
+                        }
+                    }
+                    totalFoundResults = len(uniqueHashes)
                     resultsMu.Unlock()
+
+                    // If we have enough results, cancel all remaining in-flight searches
+                    if totalFoundResults >= earlyExitThreshold {
+                        addonLogger.Info("Early exit triggered: Found %d results, cancelling remaining searches.", totalFoundResults)
+                        cancel()
+                    }
                 }
                 return nil
             })
         }
 
         if err := g.Wait(); err != nil {
+            if ctx.Err() != nil {
+                return nil // Ignore context cancellation errors
+            }
             return err
         }
-
-        uniqueHashes := make(map[string]struct{})
-        resultsMu.Lock()
-        for _, sr := range allSearchResults {
-            for _, f := range sr.result.Data {
-                uniqueHashes[f.GetHash()] = struct{}{}
-            }
-        }
-        resultsMu.Unlock()
-        totalFoundResults = len(uniqueHashes)
-
         return nil
     }
 
@@ -916,7 +934,6 @@ func MapStream(duration, size, fullResolution, title, fileExtension string, vide
     }
     hasPreferredLang := preferredLang != "" && file.Alangs != nil && contains(file.Alangs, preferredLang)
 
-    // Fixed syntax: else if on the same line as closing brace
     sourceScore := 0
     if strings.Contains(badges, "Remux") {
         sourceScore = 8
