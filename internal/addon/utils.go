@@ -31,7 +31,6 @@ var (
     digitsOnlyRe      = regexp.MustCompile(`\d+`)
     floatValueRe      = regexp.MustCompile(`[\d.]+`)
 
-    // Compiled with case-insensitive (?i) flags to prevent strings.ToLower allocations
     fallbackQualityPatterns = []struct {
         re      *regexp.Regexp
         quality string
@@ -48,10 +47,6 @@ var (
         {regexp.MustCompile(`(?i)\bweb-?dl\b`), "WEB-DL"},
     }
 )
-
-// ---------------------------------------------------------------------------
-// Bad Video Logic
-// ---------------------------------------------------------------------------
 
 func IsBadVideo(file api.FileData) bool {
     duration := file.GetDuration()
@@ -72,14 +67,10 @@ func IsBadVideo(file api.FileData) bool {
         return true
     }
     if file.RawSize > 0 && file.RawSize < 20*1024*1024 {
-        return true // < 20MB
+        return true
     }
     return false
 }
-
-// ---------------------------------------------------------------------------
-// Title Sanitization
-// ---------------------------------------------------------------------------
 
 var titleReplacer = strings.NewReplacer(
     "ä", "ae", "ö", "oe", "ü", "ue", "ß", "ss",
@@ -97,13 +88,8 @@ func SanitizeTitle(title string) string {
     return result
 }
 
-// ---------------------------------------------------------------------------
-// High-Precision Title Matching Engine (Unifies PN-SILEC and Homoglyphs)
-// ---------------------------------------------------------------------------
-
 func MatchesTitle(title, query string, strict bool) bool {
     if !strict {
-        // P1.2 Fix: Guardrail lenient mode to prevent catastrophic false positives
         parsed := RobustParseInfo(title, 0)
         if parsed == nil || parsed.Title == "" {
             return strings.Contains(strings.ToLower(title), strings.ToLower(query))
@@ -129,19 +115,11 @@ func MatchesTitle(title, query string, strict bool) bool {
     return similarity >= 0.80
 }
 
-// ---------------------------------------------------------------------------
-// Missing Base URL Error Pattern
-// ---------------------------------------------------------------------------
-
 type MissingBaseUrlError struct {
     msg string
 }
 
 func (e *MissingBaseUrlError) Error() string { return e.msg }
-
-// ---------------------------------------------------------------------------
-// URL and Path Construction Helpers
-// ---------------------------------------------------------------------------
 
 func CreateStreamUrl(downURL string, dlFarm string, dlPort int, username, password, filePath, baseUrl string) (string, error) {
     effectiveBaseUrl := baseUrl
@@ -181,10 +159,6 @@ func CreateStreamPath(file api.FileData) string {
     return postHash + ext + "/" + postTitle + ext
 }
 
-// ---------------------------------------------------------------------------
-// Quality Processing
-// ---------------------------------------------------------------------------
-
 func GetQuality(title string, fallbackResolution string) string {
     parsed := RobustParseInfo(title, 0)
     if parsed != nil && parsed.Quality != "" && parsed.Quality != "sd" {
@@ -216,10 +190,6 @@ func GetQuality(title string, fallbackResolution string) string {
     return ""
 }
 
-// ---------------------------------------------------------------------------
-// Clean, Standard Solr Query Builders
-// ---------------------------------------------------------------------------
-
 func BuildSearchQuery(contentType string, meta MetaProviderResponse) string {
     exclusions := " !sample !trailer !passwd !password !preview"
 
@@ -249,7 +219,6 @@ func BuildSearchQuery(contentType string, meta MetaProviderResponse) string {
     }
 }
 
-// BuildSearchQueryVariants generates multiple query formats per title
 func BuildSearchQueryVariants(contentType string, meta MetaProviderResponse) []string {
     var variants []string
     exclusions := " !sample !trailer !passwd !password !preview"
@@ -265,7 +234,6 @@ func BuildSearchQueryVariants(contentType string, meta MetaProviderResponse) []s
         variants = append(variants, meta.Name+exclusions)
     case "series":
         if meta.EpisodeAirDate != "" {
-            // M1 Fix: Added YYYY-MM-DD variant
             variants = append(variants, fmt.Sprintf("%s %s%s", meta.Name, meta.EpisodeAirDate, exclusions))
             dashDate := strings.ReplaceAll(meta.EpisodeAirDate, ".", "-")
             if dashDate != meta.EpisodeAirDate {
@@ -290,10 +258,6 @@ func BuildSearchQueryVariants(contentType string, meta MetaProviderResponse) []s
     }
     return variants
 }
-
-// ---------------------------------------------------------------------------
-// Simple String Helpers
-// ---------------------------------------------------------------------------
 
 func ExtractDigits(value string) *int {
     if value == "" {
@@ -362,10 +326,6 @@ func CreateThumbnailUrl(res api.EasynewsSearchResponse, file api.FileData) strin
     thumbnailSlug := file.GetPostTitle()
     return fmt.Sprintf("%s%s/pr-%s.jpg/th-%s.jpg", res.ThumbURL, idChars, id, thumbnailSlug)
 }
-
-// ---------------------------------------------------------------------------
-// Sorting Preparation Helpers
-// ---------------------------------------------------------------------------
 
 func QualityScoreFromLabel(quality string) int {
     if quality == "" {
