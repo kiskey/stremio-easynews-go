@@ -192,7 +192,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
         return StreamHandlerResult{Streams: []Stream{}}, nil
     }
 
-    cacheKey := fmt.Sprintf("%s:v10:user=%s:strict=%s:lang=%s:sort=%s:qualities=%s:maxPerQuality=%s:maxSize=%s:enableAlt=%s:altCountry=%s",
+    cacheKey := fmt.Sprintf("%s:v11:user=%s:strict=%s:lang=%s:sort=%s:qualities=%s:maxPerQuality=%s:maxSize=%s:enableAlt=%s:altCountry=%s",
         id,
         config.Username,
         config.StrictTitleMatching,
@@ -333,9 +333,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
         searchConcurrency = 1
     }
     totalMaxResults := shared.ParseIntEnv("TOTAL_MAX_RESULTS", 500)
-    
-    // Performance Fix: Early exit threshold to prevent waiting for 14 queries when we already have enough results.
-    earlyExitThreshold := 20 
+    earlyExitThreshold := 20 // Cancel remaining searches once we have 20 unique files to parse
 
     type searchResult struct {
         query  string
@@ -387,7 +385,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
                 if len(res.Data) > 0 {
                     resultsMu.Lock()
                     allSearchResults = append(allSearchResults, searchResult{query: query, result: res})
-                    
+
                     // Update unique hashes immediately for early exit calculation
                     uniqueHashes := make(map[string]struct{})
                     for _, sr := range allSearchResults {
@@ -650,23 +648,31 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
                 if b.SortMeta == nil {
                     return true
                 }
-                
+
                 aTotal := calculateTotalScore(a.SortMeta)
                 bTotal := calculateTotalScore(b.SortMeta)
                 if aTotal != bTotal {
                     return aTotal > bTotal
                 }
-                
+
                 aScore := 0
                 bScore := 0
-                if a.SortMeta.IsProper { aScore = 2 }
-                if a.SortMeta.IsRepack { aScore = 1 }
-                if b.SortMeta.IsProper { bScore = 2 }
-                if b.SortMeta.IsRepack { bScore = 1 }
+                if a.SortMeta.IsProper {
+                    aScore = 2
+                }
+                if a.SortMeta.IsRepack {
+                    aScore = 1
+                }
+                if b.SortMeta.IsProper {
+                    bScore = 2
+                }
+                if b.SortMeta.IsRepack {
+                    bScore = 1
+                }
                 if aScore != bScore {
                     return aScore > bScore
                 }
-                
+
                 return CompareSizeMeta(a.SortMeta, b.SortMeta) < 0
             }
 
@@ -726,17 +732,25 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
                     if calculateTotalScore(a) != calculateTotalScore(b) {
                         return calculateTotalScore(a) > calculateTotalScore(b)
                     }
-                    
+
                     aScore := 0
                     bScore := 0
-                    if a.IsProper { aScore = 2 }
-                    if a.IsRepack { aScore = 1 }
-                    if b.IsProper { bScore = 2 }
-                    if b.IsRepack { bScore = 1 }
+                    if a.IsProper {
+                        aScore = 2
+                    }
+                    if a.IsRepack {
+                        aScore = 1
+                    }
+                    if b.IsProper {
+                        bScore = 2
+                    }
+                    if b.IsRepack {
+                        bScore = 1
+                    }
                     if aScore != bScore {
                         return aScore > bScore
                     }
-                    
+
                     if a.HasPreferredLang != b.HasPreferredLang {
                         return a.HasPreferredLang
                     }
