@@ -176,7 +176,6 @@ var romanFalsePositives = map[string]bool{
     "cd": true, "dc": true, "mc": true, "cm": true,
 }
 
-// H2 Fix: Exported abbreviation map function
 var abbreviationMap = map[string][]string{
     "dr":   {"doctor"},
     "st":   {"saint"},
@@ -187,10 +186,12 @@ var abbreviationMap = map[string][]string{
     "ft":   {"feat", "featuring"},
 }
 
+// Issue #2 Fix: Strip trailing punctuation before abbreviation lookup
 func ExpandAbbreviations(title string) string {
     words := strings.Fields(strings.ToLower(title))
     for i, w := range words {
-        if expansions, ok := abbreviationMap[w]; ok && len(expansions) > 0 {
+        cleaned := strings.TrimRight(w, ".,;:!?")
+        if expansions, ok := abbreviationMap[cleaned]; ok && len(expansions) > 0 {
             words[i] = expansions[0]
         }
     }
