@@ -544,12 +544,13 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
                     continue
                 }
 
+                // Tightened movie year tolerance to ±1 year
                 if meta.Year > 0 && parsedInfo.Year > 0 {
                     diff := parsedInfo.Year - meta.Year
                     if diff < 0 {
                         diff = -diff
                     }
-                    if diff > 2 {
+                    if diff > 1 {
                         rejectedTitle++
                         continue
                     }
