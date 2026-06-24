@@ -14,18 +14,19 @@ import (
 )
 
 type ParseResult struct {
-    Title    string
-    Season   int
-    Episode  int
-    Episodes []int
-    Year     int
-    Language string
-    Quality  string
-    IsPack   bool
-    IsProper bool
-    IsRepack bool
-    Edition  string
-    Date     string
+    Title        string
+    Season       int
+    Episode      int
+    Episodes     []int
+    Year         int
+    Language     string
+    Quality      string
+    IsPack       bool
+    IsProper     bool
+    IsRepack     bool
+    Edition      string
+    Date         string
+    ReleaseGroup string // P2.3 Fix: Added ReleaseGroup
 }
 
 type CandidateFile struct {
@@ -107,6 +108,10 @@ var rangeRegex = regexp.MustCompile(`(?i)\b(?:e|ep|episode)?\s*(\d+)\s*(?:-|to)\
 var seasonFolderRegex = regexp.MustCompile(`(?i)\b(?:s|season|series|vol|volume|book|chapter)\s*0*(\d+)\b`)
 var dateEpisodeRegex = regexp.MustCompile(`(?i)\b(\d{4})[\.\-_ ](\d{2})[\.\-_ ](\d{2})\b`)
 
+// P1.1 Fix: Word-boundary regex for PROPER/REPACK
+var properWordBoundaryRe = regexp.MustCompile(`(?i)\bproper\b`)
+var repackWordBoundaryRe = regexp.MustCompile(`(?i)\brepack\b`)
+
 // Bug 4 Fix: Pre-compiled Edition Patterns to prevent regex compilation inside parse loop
 var compiledEditionPatterns = []struct {
     Re   *regexp.Regexp
@@ -122,8 +127,8 @@ var compiledEditionPatterns = []struct {
     {regexp.MustCompile(`(?i)imax`), "IMAX"},
 }
 
-// Refinement 2 Fix: Tightened packRegex to prevent false positives like "Complete Unknown"
-var packRegex = regexp.MustCompile(`(?i)\b(complete\s+(?:series|collection|season)|season\s+complete|pack|bundle)\b`)
+// P2.4 Fix: Expanded packRegex patterns
+var packRegex = regexp.MustCompile(`(?i)\b(?:(?:complete|full)\s+(?:series|collection|season|s\d+)|season\s+complete|(?:season\s+)?s\d+(?:\s*-\s*s\d+)?\s+complete|pack|bundle|all\s+episodes?)\b`)
 
 // Bug 3 Fix: Extracted regex for natural sort to package-level to prevent O(N log N) compilation
 var naturalCompareRegex = regexp.MustCompile(`\d+`)
@@ -406,14 +411,15 @@ func RobustParseInfo(title string, fallbackSeason int) *ParseResult {
                 copy(episodes, info.EpisodeNumbers)
             }
             result = &ParseResult{
-                Title:    info.SeriesTitle,
-                Season:   info.SeasonNumber,
-                Episode:  episode,
-                Episodes: episodes,
-                Year:     info.SeriesTitleInfo.Year,
-                Language: lang,
-                Quality:  getQuality(info.Quality.Quality.Resolution),
-                IsPack:   IsPack(info),
+                Title:        info.SeriesTitle,
+                Season:       info.SeasonNumber,
+                Episode:      episode,
+                Episodes:     episodes,
+                Year:         info.SeriesTitleInfo.Year,
+                Language:     lang,
+                Quality:      getQuality(info.Quality.Quality.Resolution),
+                IsPack:       IsPack(info),
+                ReleaseGroup: info.ReleaseGroup, // P2.3 Fix
             }
         } else {
             movie := rtp.ParseMovieTitle(clean)
@@ -423,13 +429,14 @@ func RobustParseInfo(title string, fallbackSeason int) *ParseResult {
                     lang = getISO(movie.Languages[0])
                 }
                 result = &ParseResult{
-                    Title:    movie.PrimaryMovieTitle(),
-                    Season:   0,
-                    Episode:  0,
-                    Episodes: []int{},
-                    Year:     movie.Year,
-                    Language: lang,
-                    Quality:  getQuality(movie.Quality.Quality.Resolution),
+                    Title:        movie.PrimaryMovieTitle(),
+                    Season:       0,
+                    Episode:      0,
+                    Episodes:     []int{},
+                    Year:         movie.Year,
+                    Language:     lang,
+                    Quality:      getQuality(movie.Quality.Quality.Resolution),
+                    ReleaseGroup: movie.ReleaseGroup, // P2.3 Fix
                 }
             } else {
                 result = &ParseResult{
@@ -444,21 +451,23 @@ func RobustParseInfo(title string, fallbackSeason int) *ParseResult {
         }
     }
 
-    // Extract Editions, PROPER, REPACK
-    lowerClean := strings.ToLower(clean)
-    if strings.Contains(lowerClean, "proper") {
+    // P1.1 Fix: Word-boundary PROPER/REPACK detection
+    if properWordBoundaryRe.MatchString(clean) {
         result.IsProper = true
     }
-    if strings.Contains(lowerClean, "repack") {
+    if repackWordBoundaryRe.MatchString(clean) {
         result.IsRepack = true
     }
 
-    // Bug 4 Fix: Iterate over pre-compiled edition patterns
+    // P3.2 Fix: Multi-edition accumulation
+    var editions []string
     for _, p := range compiledEditionPatterns {
         if p.Re.MatchString(clean) {
-            result.Edition = p.Name
-            break
+            editions = append(editions, p.Name)
         }
+    }
+    if len(editions) > 0 {
+        result.Edition = strings.Join(editions, " + ")
     }
 
     robustParseCache.Set(title, result)
@@ -486,10 +495,11 @@ func ParseFilePath(path string, fallbackSeason int) *ParseResult {
             season = fallbackSeason
         }
         return &ParseResult{
-            Title:    info.SeriesTitle,
-            Season:   season,
-            Episode:  episode,
-            Episodes: episodes,
+            Title:        info.SeriesTitle,
+            Season:       season,
+            Episode:      episode,
+            Episodes:     episodes,
+            ReleaseGroup: info.ReleaseGroup, // P2.3 Fix
         }
     }
     return &ParseResult{
