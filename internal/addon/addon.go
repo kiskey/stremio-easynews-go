@@ -23,19 +23,7 @@ func isMultiWord(title string) bool {
     return len(strings.Fields(title)) > 1
 }
 
-type SortMeta struct {
-    QualityScore     int
-    SourceScore      int
-    HDRScore         int
-    CodecScore       int
-    SizeUnit         string
-    SizeValue        float64
-    DateMs           int64
-    HasPreferredLang bool
-    IsProper         bool
-    IsRepack         bool
-    Edition          string
-}
+// Issue #1 Fix: Removed local SortMeta definition. It is canonically defined in types.go.
 
 type AddonConfig struct {
     Username             string `json:"username"`
@@ -205,7 +193,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
         return StreamHandlerResult{Streams: []Stream{}}, nil
     }
 
-    cacheKey := fmt.Sprintf("%s:v7:user=%s:strict=%s:lang=%s:sort=%s:qualities=%s:maxPerQuality=%s:maxSize=%s:enableAlt=%s:altCountry=%s",
+    cacheKey := fmt.Sprintf("%s:v8:user=%s:strict=%s:lang=%s:sort=%s:qualities=%s:maxPerQuality=%s:maxSize=%s:enableAlt=%s:altCountry=%s",
         id,
         config.Username,
         config.StrictTitleMatching,
@@ -521,6 +509,12 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
                     continue
                 }
 
+                // Issue #4 Fix: Explicit OVA/ONA/OAD rejection in main stream pipeline
+                if targetEpisode > 0 && isExtraOrSpecial(title) {
+                    rejectedTitle++
+                    continue
+                }
+
                 if targetSeason > 0 && targetEpisode > 0 {
                     isPack, _, _, hasRange := ParsePackOrRange(title, targetEpisode)
 
@@ -538,7 +532,6 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
                         (parsedInfo.Episode > 0 && !episodeMatches && !hasRange && !isPack && !parsedInfo.IsPack) {
                         
                         // E2 Fix: Accept absolute-numbered episodes (Season=0, Episode>0)
-                        // instead of rejecting them. The title matcher verified the show name.
                         if parsedInfo.Season == 0 && parsedInfo.Episode > 0 {
                             // Skip rejection
                         } else {
@@ -928,7 +921,6 @@ func MapStream(duration, size, fullResolution, title, fileExtension string, vide
     }
     hasPreferredLang := preferredLang != "" && file.Alangs != nil && contains(file.Alangs, preferredLang)
 
-    // E1 & H1 Fix: Removed "TS" substring check to prevent DTS audio mismatches. Added WEBRip.
     sourceScore := 0
     if strings.Contains(badges, "Remux") { sourceScore = 8 }
     else if strings.Contains(badges, "BluRay") { sourceScore = 7 }
@@ -944,7 +936,6 @@ func MapStream(duration, size, fullResolution, title, fileExtension string, vide
     else if strings.Contains(badges, "HDR10") { hdrScore = 2 }
     else if strings.Contains(badges, "HDR") { hdrScore = 1 }
 
-    // M2 Fix: Added AV1 CodecScore check
     codecScore := 0
     if strings.Contains(badges, "AV1") { codecScore = 3 }
     else if strings.Contains(badges, "H265 HEVC") { codecScore = 2 }
@@ -978,7 +969,6 @@ func MapStream(duration, size, fullResolution, title, fileExtension string, vide
         bingeLang = strings.Join(sortedLangs, ",")
     }
 
-    // M5 Fix: If release group is missing, append unique file hash to prevent incorrect seamless grouping
     releaseGroup := ""
     if parsedInfo != nil && parsedInfo.ReleaseGroup != "" {
         releaseGroup = parsedInfo.ReleaseGroup
@@ -987,7 +977,12 @@ func MapStream(duration, size, fullResolution, title, fileExtension string, vide
     if releaseGroup != "" {
         bingeGroup = fmt.Sprintf("easynews-plus-plus|%s|%s|%s|%s", quality, bingeLang, fileExtension, releaseGroup)
     } else {
-        bingeGroup = fmt.Sprintf("easynews-plus-plus|%s|%s|%s|unique:%s", quality, bingeLang, fileExtension, file.GetHash()[:8])
+        // Issue #3 Fix: Bounds check for hash slice to prevent panic
+        hashSuffix := file.GetHash()
+        if len(hashSuffix) > 8 {
+            hashSuffix = hashSuffix[:8]
+        }
+        bingeGroup = fmt.Sprintf("easynews-plus-plus|%s|%s|%s|unique:%s", quality, bingeLang, fileExtension, hashSuffix)
     }
 
     name := "Easynews++"
