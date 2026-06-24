@@ -99,14 +99,14 @@ var languageToISO = map[rtp.Language]string{
 }
 
 // Collapses spaces and symbols between SXX and EP(XX) to force standard SXXEXX grouping
-// Expanded to handle EP, Episode, E, and various separators (., -, _, space)
 var epPatternRegex = regexp.MustCompile(`(?i)(S\d+)?[\s\-_.]*\b(?:EP|EPISODE|E)[\s\-_.]*[\(\[]?\s*(\d+)\s*[\)\]]?\b`)
 var urlRegex = regexp.MustCompile(`\b(https?://\S+|www\.\S+\.\w+|[\w.-]+@[\w.-]+)\b`)
 var bracketRegex = regexp.MustCompile(`\[.*?[^\w\s-].*?\]`)
 
 var rangeRegex = regexp.MustCompile(`(?i)\b(?:e|ep|episode)?\s*(\d+)\s*(?:-|to)\s*(?:e|ep|episode)?\s*(\d+)\b`)
-var seasonFolderRegex = regexp.MustCompile(`(?i)\b(?:s|season|series)\s*0*(\d+)\b`)
+var seasonFolderRegex = regexp.MustCompile(`(?i)\b(?:s|season|series|vol|volume|book|chapter)\s*0*(\d+)\b`)
 var dateEpisodeRegex = regexp.MustCompile(`(?i)\b(\d{4})[\.\-_ ](\d{2})[\.\-_ ](\d{2})\b`)
+var packRegex = regexp.MustCompile(`(?i)\b(complete|complete\s+series|complete\s+collection|season\s+complete|pack|bundle)\b`)
 
 // Low-Allocation pre-defined filters deconstructed from Perl badges.json to RE2 standard.
 var filtersDef = []struct {
@@ -193,7 +193,7 @@ func init() {
 // ParsePackOrRange checks if a torrent name is a complete pack or contains an episode range
 func ParsePackOrRange(name string, targetE int) (isPack bool, startE int, endE int, hasRange bool) {
     lower := strings.ToLower(name)
-    if strings.Contains(lower, "complete") || strings.Contains(lower, "pack") || strings.Contains(lower, "bundle") {
+    if packRegex.MatchString(lower) {
         return true, 0, 0, false
     }
 
@@ -564,6 +564,20 @@ func isDecimalDot(s string, i int) bool {
     return left >= '0' && left <= '9' && right >= '0' && right <= '9'
 }
 
+// naturalCompare extracts numbers from strings, pads them, and compares to ensure S01E02 < S01E10
+func naturalCompare(a, b string) bool {
+    re := regexp.MustCompile(`\d+`)
+    padA := re.ReplaceAllStringFunc(a, func(m string) string {
+        n, _ := strconv.Atoi(m)
+        return fmt.Sprintf("%020d", n)
+    })
+    padB := re.ReplaceAllStringFunc(b, func(m string) string {
+        n, _ := strconv.Atoi(m)
+        return fmt.Sprintf("%020d", n)
+    })
+    return padA < padB
+}
+
 func FindBestSeriesFile(candidates []CandidateFile, targetSeason, targetEpisode, fallbackSeason int) (CandidateFile, bool) {
     var bestCandidate CandidateFile
     var found bool
@@ -584,12 +598,10 @@ func FindBestSeriesFile(candidates []CandidateFile, targetSeason, targetEpisode,
         info := ParseFilePath(cleanPath, fallbackSeason)
 
         matched := false
-        // Check standard parsing match
         if info.Season == targetSeason && info.Episode == targetEpisode {
             matched = true
         }
 
-        // Check multi-episode parsed array
         if !matched && info.Season == targetSeason && len(info.Episodes) > 0 {
             for _, ep := range info.Episodes {
                 if ep == targetEpisode {
@@ -599,7 +611,6 @@ func FindBestSeriesFile(candidates []CandidateFile, targetSeason, targetEpisode,
             }
         }
 
-        // Check Range Regex (e.g. S01E21-22)
         if !matched && info.Season == targetSeason && matchRange(c.Path, targetEpisode) {
             matched = true
         }
@@ -643,8 +654,9 @@ func FindBestSeriesFile(candidates []CandidateFile, targetSeason, targetEpisode,
     }
 
     if len(seasonMatches) > 0 {
+        // Use natural sort to ensure E02 comes before E10
         sort.Slice(seasonMatches, func(i, j int) bool {
-            return strings.Compare(strings.ToLower(seasonMatches[i].Path), strings.ToLower(seasonMatches[j].Path)) < 0
+            return naturalCompare(strings.ToLower(seasonMatches[i].Path), strings.ToLower(seasonMatches[j].Path))
         })
 
         if targetEpisode > 0 && targetEpisode <= len(seasonMatches) {
