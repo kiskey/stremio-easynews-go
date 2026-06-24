@@ -1,673 +1,838 @@
 package addon
 
 import (
-	"regexp"
-	"strconv"
-	"strings"
-	"sync"
-	"unicode"
+    "context"
+    "fmt"
+    "io"
+    "net/http"
+    "os"
+    "strconv"
+    "strings"
+    "sync"
+    "time"
+
+    "github.com/bytedance/sonic"
+    "github.com/kiskey/stremio-easynews-go/internal/i18n"
+    "github.com/kiskey/stremio-easynews-go/internal/shared"
+    "golang.org/x/sync/singleflight"
 )
 
-// Static Low-Entropy Grammatical Stop Words Set for PN-SILEC Filtering
-var stopWords = map[string]bool{
-	"the": true, "a": true, "an": true, "and": true, "or": true,
-	"of": true, "in": true, "on": true, "at": true, "to": true,
-	"for": true, "with": true, "by": true, "from": true, "aka": true,
-	"la": true, "le": true, "les": true, "el": true, "un": true, "une": true,
+var metaLogger = shared.CreateLogger("Meta", "")
+
+var (
+    tmdbAPIKey = os.Getenv("TMDB_API_KEY")
+    useTMDB    = tmdbAPIKey != ""
+)
+
+const metaFetchTimeout = 5000 * time.Millisecond
+
+// ---------------------------------------------------------------------------
+// Structural Cache Mappings
+// ---------------------------------------------------------------------------
+
+type tmdbIDMapping struct {
+    id               int
+    isMovie          bool
+    originalLanguage string
 }
 
-// Technical tags that should not trigger the single-word guardrail.
-// These are common torrent metadata tokens that appear after the actual movie title.
-var metadataWords = map[string]bool{
-	"1080p": true, "720p": true, "2160p": true, "480p": true, "360p": true,
-	"4k": true, "uhd": true, "bluray": true, "bdrip": true, "brrip": true,
-	"webdl": true, "webrip": true, "hdrip": true, "dvdrip": true, "pdtv": true,
-	"hdtv": true, "cam": true, "camrip": true, "hdcam": true, "ts": true,
-	"hdts": true, "tc": true, "predvd": true, "dvdscr": true, "screener": true,
-	"scr": true, "hq": true, "v2": true, "v3": true, "hc": true, "clean": true,
-	"imax": true, "h264": true, "x264": true, "h265": true, "x265": true,
-	"hevc": true, "aac": true, "aac3": true, "dts": true, "dd51": true,
-	"truehd": true, "ac3": true, "mp3": true, "xvid": true, "divx": true,
-	"av1": true, "vp9": true, "hdr10": true, "hdr": true, "dv": true,
-	"dolby": true, "vision": true, "atmos": true, "dts-hd": true, "ma": true,
-	"dual": true, "audio": true, "dubbed": true, "dub": true, "multi": true,
-	"hindi": true, "tamil": true, "telugu": true, "malayalam": true,
-	"kannada": true, "bengali": true, "marathi": true, "punjabi": true,
-	"english": true, "spanish": true, "french": true, "italic": true,
-	"russian": true, "korean": true, "japanese": true, "chinese": true,
-	"51": true, "71": true, "20": true, "10bit": true, "remux": true,
-	"3d": true, "sdr": true, "gb": true, "mb": true, "kb": true,
-	"web": true, "dl": true, "hd": true,
-	"complete": true, "repack": true, "proper": true, "vostfr": true,
-	"subs":     true, "sub": true, "esub": true, "vof": true, "vff": true,
-	"vf":       true, "season": true, "series": true, "episode": true, "pack": true,
-	// Aligned common extensions and formats
-	"mkv": true, "mp4": true, "avi": true, "mov": true, "wmv": true, "flv": true, "webm": true,
-	"rar": true, "zip": true, "par2": true, "nfo": true, "srt": true,
-	// Country/region identifiers & miscellaneous common tags to prevent false negatives
-	"us": true, "uk": true, "ca": true, "nz": true, "au": true,
-	"fr": true, "de": true, "jp": true, "kr": true, "cn": true,
-	"hk": true, "tw": true, "it": true, "es": true, "nl": true,
-	"pl": true, "ru": true, "se": true, "no": true, "fi": true,
-	"dk": true, "new": true, "full": true, "all": true,
+// ---------------------------------------------------------------------------
+// Thread-Safe Bounded Generic Cache Structure
+// ---------------------------------------------------------------------------
+
+type cacheEntry[V any] struct {
+    value     V
+    expiresAt int64
 }
 
-// sequelIndicators are words that strongly suggest a different franchise entry.
-var sequelIndicators = map[string]bool{
-	"part": true, "chapter": true, "episode": true, "season": true,
-	"volume": true, "vol": true, "book": true, "returns": true,
-	"rises": true, "begins": true, "forever": true, "legacy": true,
-	"fallout": true, "crusade": true, "dynasty": true, "empire": true,
-	"revenge": true, "resurrection": true, "reloaded": true,
-	"revolutions": true, "origins": true, "awakens": true,
-	"last": true, "final": true, "next": true, "new": true,
+type BoundedCache[K comparable, V any] struct {
+    mu         sync.RWMutex
+    data       map[K]cacheEntry[V]
+    maxEntries int
+    ttl        time.Duration
 }
 
-// homoglyphClasses maps standard stylizations/leetspeak lookalikes to represent equivalence classes.
-var homoglyphClasses = map[rune][]rune{
-	'0': {'0', 'o'},
-	'o': {'0', 'o'},
-	'1': {'1', 'i', 'l', '!'},
-	'i': {'1', 'i', 'l', '!'},
-	'l': {'1', 'i', 'l', '!'},
-	'3': {'3', 'e'},
-	'e': {'3', 'e'},
-	'4': {'4', 'a', '@'},
-	'a': {'4', 'a', '@'},
-	'5': {'5', 's'},
-	's': {'5', 's'},
-	'7': {'7', 't', 'v', 'l'},
-	't': {'7', 't'},
-	'v': {'7', 'v'},
-	'8': {'8', 'b'},
-	'b': {'8', 'b'},
-	'9': {'9', 'g'},
-	'g': {'9', 'g'},
+func NewBoundedCache[K comparable, V any](maxEntries int, ttl time.Duration) *BoundedCache[K, V] {
+    return &BoundedCache[K, V]{
+        data:       make(map[K]cacheEntry[V]),
+        maxEntries: maxEntries,
+        ttl:        ttl,
+    }
 }
 
-var writtenNumbers = map[string]string{
-	"one": "1", "first": "1", "1st": "1",
-	"two": "2", "second": "2", "2nd": "2",
-	"three": "3", "third": "3", "3rd": "3",
-	"four": "4", "fourth": "4", "4th": "4",
-	"five": "5", "fifth": "5", "5th": "5",
-	"six": "6", "sixth": "6", "6th": "6",
-	"seven": "7", "seventh": "7", "7th": "7",
-	"eight": "8", "eighth": "8", "8th": "8",
-	"nine": "9", "ninth": "9", "9th": "9",
-	"ten": "10", "tenth": "10", "10th": "10",
-	"eleven": "11", "eleventh": "11", "11th": "11",
-	"twelve": "12", "twelfth": "12", "12th": "12",
+func (c *BoundedCache[K, V]) Get(key K) (V, bool) {
+    c.mu.RLock()
+    entry, ok := c.data[key]
+    c.mu.RUnlock()
+    if !ok {
+        var zero V
+        return zero, false
+    }
+    if time.Now().UnixNano() > entry.expiresAt {
+        c.mu.Lock()
+        entryCheck, okCheck := c.data[key]
+        if okCheck && time.Now().UnixNano() > entryCheck.expiresAt {
+            delete(c.data, key)
+        }
+        c.mu.Unlock()
+        var zero V
+        return zero, false
+    }
+    return entry.value, true
 }
 
-var sequelContexts = map[string]bool{
-	"part": true, "vol": true, "volume": true, "chapter": true,
-	"episode": true, "season": true, "act": true, "entry": true,
+func (c *BoundedCache[K, V]) Set(key K, value V) {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+
+    c.data[key] = cacheEntry[V]{
+        value:     value,
+        expiresAt: time.Now().Add(c.ttl).UnixNano(),
+    }
+
+    if len(c.data) > c.maxEntries {
+        count := 0
+        for k := range c.data {
+            if count >= c.maxEntries/2 {
+                break
+            }
+            delete(c.data, k)
+            count++
+        }
+    }
 }
 
-var ignoredNumbers = map[string]bool{
-	"1080": true, "2160": true, "720": true, "480": true, "360": true,
-	"576": true, "264": true, "265": true, "10": true, "8": true,
+// Cache Instances
+var (
+    imdbToTMDBIDCache    = NewBoundedCache[string, tmdbIDMapping](2000, 48*time.Hour)
+    tmdbAltTitlesCache   = NewBoundedCache[string, []string](2000, 24*time.Hour)
+    metaResponseCache    = NewBoundedCache[string, MetaProviderResponse](2000, 24*time.Hour)
+
+    tmdbIDSingleflight    singleflight.Group
+    altTitlesSingleflight singleflight.Group
+    metaSingleflight      singleflight.Group
+)
+
+// ---------------------------------------------------------------------------
+// Resilient API Network Fetcher with Exponential Backoff
+// ---------------------------------------------------------------------------
+
+func fetchWithRetry(ctx context.Context, client *http.Client, req *http.Request) (*http.Response, error) {
+    var resp *http.Response
+    var err error
+    maxRetries := 3
+    backoff := 500 * time.Millisecond
+
+    for i := 0; i < maxRetries; i++ {
+        reqWithCtx := req.WithContext(ctx)
+        resp, err = client.Do(reqWithCtx)
+        if err == nil {
+            if resp.StatusCode < 500 && resp.StatusCode != 429 {
+                return resp, nil
+            }
+            
+            // Handle 429 Too Many Requests
+            if resp.StatusCode == 429 {
+                retryAfter := resp.Header.Get("Retry-After")
+                resp.Body.Close()
+                wait := backoff
+                if retryAfter != "" {
+                    if secs, parseErr := strconv.Atoi(retryAfter); parseErr == nil {
+                        wait = time.Duration(secs) * time.Second
+                    }
+                }
+                select {
+                case <-ctx.Done():
+                    return nil, ctx.Err()
+                case <-time.After(wait):
+                    backoff *= 2
+                    continue
+                }
+            }
+            
+            resp.Body.Close()
+            err = fmt.Errorf("TMDB downstream server error: %d", resp.StatusCode)
+        }
+
+        select {
+        case <-ctx.Done():
+            return nil, ctx.Err()
+        case <-time.After(backoff):
+            backoff *= 2
+        }
+    }
+    return nil, err
 }
 
-var seasonRangeRegex = regexp.MustCompile(`(?i)\b(?:s|season|seasons)\s*0*(\d+)\s*(?:-|to)\s*0*(\d+)\b`)
+// ---------------------------------------------------------------------------
+// ID Resolution Helper (IMDb ID -> TMDB ID)
+// ---------------------------------------------------------------------------
 
-// isBlockedArchive checks if a torrent name is a compressed archive that Stremio cannot play
-func isBlockedArchive(name string) bool {
-	lower := strings.ToLower(name)
-	return strings.HasSuffix(lower, ".rar") ||
-		strings.HasSuffix(lower, ".zip") ||
-		strings.HasSuffix(lower, ".7z") ||
-		strings.HasSuffix(lower, ".tar") ||
-		strings.HasSuffix(lower, ".tgz") ||
-		strings.HasSuffix(lower, ".gz")
+func resolveTMDBID(imdbID string) (int, bool, string, error) {
+    if val, ok := imdbToTMDBIDCache.Get(imdbID); ok {
+        return val.id, val.isMovie, val.originalLanguage, nil
+    }
+
+    res, err, _ := tmdbIDSingleflight.Do(imdbID, func() (interface{}, error) {
+        if val, ok := imdbToTMDBIDCache.Get(imdbID); ok {
+            return val, nil
+        }
+
+        metaLogger.Info("TMDB: Resolving TMDB ID from IMDb ID '%s'...", imdbID)
+
+        ctx, cancel := context.WithTimeout(context.Background(), metaFetchTimeout)
+        defer cancel()
+
+        findURL := fmt.Sprintf("https://api.themoviedb.org/3/find/%s?api_key=%s&external_source=imdb_id", imdbID, tmdbAPIKey)
+        req, _ := http.NewRequestWithContext(ctx, "GET", findURL, nil)
+        req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+        resp, err := fetchWithRetry(ctx, http.DefaultClient, req)
+        if err != nil {
+            metaLogger.Error("TMDB: Request failed to find TMDB mapping for IMDb ID '%s': %v", imdbID, err)
+            return tmdbIDMapping{}, err
+        }
+        defer func() {
+            _, _ = io.Copy(io.Discard, resp.Body)
+            resp.Body.Close()
+        }()
+
+        if resp.StatusCode == 401 {
+            useTMDB = false
+            metaLogger.Error("TMDB: Invalid API Key provided. Disabling TMDB translations globally.")
+            return tmdbIDMapping{}, fmt.Errorf("TMDB API key invalid")
+        }
+        if resp.StatusCode != 200 {
+            metaLogger.Error("TMDB: Upstream find returned status code: %d for IMDb ID '%s'", resp.StatusCode, imdbID)
+            return tmdbIDMapping{}, fmt.Errorf("TMDB find error: %d", resp.StatusCode)
+        }
+
+        var findData struct {
+            MovieResults []struct {
+                ID               int    `json:"id"`
+                OriginalLanguage string `json:"original_language"`
+            } `json:"movie_results"`
+            TVResults []struct {
+                ID               int    `json:"id"`
+                OriginalLanguage string `json:"original_language"`
+            } `json:"tv_results"`
+        }
+        if err := sonic.ConfigStd.NewDecoder(resp.Body).Decode(&findData); err != nil {
+            return tmdbIDMapping{}, err
+        }
+
+        isMovie := len(findData.MovieResults) > 0
+        isTV := len(findData.TVResults) > 0
+        if !isMovie && !isTV {
+            metaLogger.Info("TMDB: No TMDB ID mapping found on find endpoint for IMDb ID '%s'", imdbID)
+            return tmdbIDMapping{}, nil
+        }
+
+        var tmdbID int
+        var origLang string
+        if isMovie {
+            tmdbID = findData.MovieResults[0].ID
+            origLang = findData.MovieResults[0].OriginalLanguage
+        } else {
+            tmdbID = findData.TVResults[0].ID
+            origLang = findData.TVResults[0].OriginalLanguage
+        }
+
+        mapping := tmdbIDMapping{id: tmdbID, isMovie: isMovie, originalLanguage: origLang}
+        imdbToTMDBIDCache.Set(imdbID, mapping)
+        metaLogger.Info("TMDB: Successfully resolved IMDb ID '%s' to TMDB ID %d (isMovie: %v, Lang: %s)", imdbID, tmdbID, isMovie, origLang)
+        return mapping, nil
+    })
+
+    if err != nil {
+        return 0, false, "", err
+    }
+    mapping := res.(tmdbIDMapping)
+    return mapping.id, mapping.isMovie, mapping.originalLanguage, nil
 }
 
-func containsNonASCII(s string) bool {
-	for _, r := range s {
-		if r > 127 {
-			return true
-		}
-	}
-	return true
+// ---------------------------------------------------------------------------
+// Dynamic Alternate Titles Resolution
+// ---------------------------------------------------------------------------
+
+func getTMDBAlternativeTitles(imdbID string, enableAltTitles bool, altTitleCountry string) ([]string, error) {
+    if !useTMDB || !enableAltTitles {
+        return nil, nil
+    }
+
+    cacheKey := fmt.Sprintf("%s:%s", imdbID, altTitleCountry)
+
+    if cached, ok := tmdbAltTitlesCache.Get(cacheKey); ok {
+        return cached, nil
+    }
+
+    res, err, _ := altTitlesSingleflight.Do(cacheKey, func() (interface{}, error) {
+        if cached, ok := tmdbAltTitlesCache.Get(cacheKey); ok {
+            return cached, nil
+        }
+
+        metaLogger.Info("TMDB: Fetching alternative titles for IMDb ID '%s' (filter: '%s')...", imdbID, altTitleCountry)
+
+        tmdbID, isMovie, origLang, err := resolveTMDBID(imdbID)
+        if err != nil || tmdbID == 0 {
+            return nil, err
+        }
+
+        var u string
+        if isMovie {
+            u = fmt.Sprintf("https://api.themoviedb.org/3/movie/%d/alternative_titles?api_key=%s", tmdbID, tmdbAPIKey)
+        } else {
+            u = fmt.Sprintf("https://api.themoviedb.org/3/tv/%d/alternative_titles?api_key=%s", tmdbID, tmdbAPIKey)
+        }
+
+        ctx, cancel := context.WithTimeout(context.Background(), metaFetchTimeout)
+        defer cancel()
+
+        req, _ := http.NewRequestWithContext(ctx, "GET", u, nil)
+        req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+        resp, err := fetchWithRetry(ctx, http.DefaultClient, req)
+        if err != nil {
+            metaLogger.Error("TMDB: Failed to fetch alternative titles from endpoint: %v", err)
+            return nil, err
+        }
+        defer func() {
+            _, _ = io.Copy(io.Discard, resp.Body)
+            resp.Body.Close()
+        }()
+
+        if resp.StatusCode != 200 {
+            metaLogger.Error("TMDB: Upstream alternative titles returned status code: %d", resp.StatusCode)
+            return nil, fmt.Errorf("TMDB alt titles error: %d", resp.StatusCode)
+        }
+
+        var data struct {
+            ID      int `json:"id"`
+            Titles  []struct {
+                ISO3166_1 string `json:"iso_3166_1"`
+                Title     string `json:"title"`
+                Type      string `json:"type"`
+            } `json:"titles"`
+            Results []struct {
+                ISO3166_1 string `json:"iso_3166_1"`
+                Title     string `json:"title"`
+                Type      string `json:"type"`
+            } `json:"results"`
+        }
+
+        if err := sonic.ConfigStd.NewDecoder(resp.Body).Decode(&data); err != nil {
+            return nil, err
+        }
+
+        type altTitleItem struct {
+            ISO3166_1 string
+            Title     string
+            Type      string
+        }
+
+        var rawItems []altTitleItem
+        if len(data.Titles) > 0 {
+            for _, item := range data.Titles {
+                rawItems = append(rawItems, altTitleItem{ISO3166_1: item.ISO3166_1, Title: item.Title, Type: item.Type})
+            }
+        } else if len(data.Results) > 0 {
+            for _, item := range data.Results {
+                rawItems = append(rawItems, altTitleItem{ISO3166_1: item.ISO3166_1, Title: item.Title, Type: item.Type})
+            }
+        }
+
+        langToCountry := map[string]string{
+            "ko": "KR", "ja": "JP", "zh": "CN", "ru": "RU",
+            "hi": "IN", "th": "TH", "vi": "VN", "tr": "TR",
+            "ar": "SA", "he": "IL", "fa": "IR",
+        }
+        originalCountry := langToCountry[origLang]
+
+        romanizedTypes := map[string]bool{
+            "Romaji": true, "Pinyin": true, "Transliteration": true,
+            "Modern Title": true,
+        }
+
+        var cleanList []string
+        seen := make(map[string]bool)
+        for _, item := range rawItems {
+            t := strings.TrimSpace(item.Title)
+            if t == "" || len(t) <= 1 {
+                continue
+            }
+            if seen[t] {
+                continue
+            }
+
+            iso := strings.ToUpper(item.ISO3166_1)
+            isAllowed := false
+
+            if altTitleCountry == "all" {
+                isAllowed = true
+            } else {
+                if iso == "US" || iso == "GB" || iso == "CA" || iso == "" {
+                    isAllowed = true
+                }
+                if altTitleCountry != "" && iso == strings.ToUpper(altTitleCountry) {
+                    isAllowed = true
+                }
+                if originalCountry != "" && iso == originalCountry {
+                    isAllowed = true
+                }
+                if romanizedTypes[item.Type] {
+                    isAllowed = true
+                }
+            }
+
+            if isAllowed {
+                seen[t] = true
+                cleanList = append(cleanList, t)
+            }
+        }
+
+        tmdbAltTitlesCache.Set(cacheKey, cleanList)
+        metaLogger.Info("TMDB: Successfully resolved %d filtered alternative titles for IMDb ID '%s': %v", len(cleanList), imdbID, cleanList)
+        return cleanList, nil
+    })
+
+    if err != nil {
+        return nil, err
+    }
+    return res.([]string), nil
 }
 
-func stripLeadingArticles(s string) string {
-	s = strings.TrimSpace(s)
-	articles := []string{"the ", "a ", "an ", "le ", "la ", "les ", "l'"}
-	for _, art := range articles {
-		if strings.HasPrefix(s, art) {
-			return strings.TrimPrefix(s, art)
-		}
-	}
-	return s
+// ---------------------------------------------------------------------------
+// TMDB Title Translation Logic
+// ---------------------------------------------------------------------------
+
+func getTMDBTranslatedTitle(imdbID, preferredLanguage string) (string, error) {
+    if !useTMDB || preferredLanguage == "" {
+        return "", nil
+    }
+
+    tmdbLang := i18n.ConvertToTMDBLanguageCode(preferredLanguage)
+
+    tmdbID, isMovie, _, err := resolveTMDBID(imdbID)
+    if err != nil || tmdbID == 0 {
+        return "", err
+    }
+
+    metaLogger.Info("TMDB: Fetching translated title for IMDb ID '%s' in language '%s'...", imdbID, tmdbLang)
+
+    var transURL string
+    if isMovie {
+        transURL = fmt.Sprintf("https://api.themoviedb.org/3/movie/%d/translations?api_key=%s", tmdbID, tmdbAPIKey)
+    } else {
+        transURL = fmt.Sprintf("https://api.themoviedb.org/3/tv/%d/translations?api_key=%s", tmdbID, tmdbAPIKey)
+    }
+
+    ctx, cancel := context.WithTimeout(context.Background(), metaFetchTimeout)
+    defer cancel()
+
+    req, _ := http.NewRequestWithContext(ctx, "GET", transURL, nil)
+    req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+    resp, err := fetchWithRetry(ctx, http.DefaultClient, req)
+    if err != nil {
+        metaLogger.Error("TMDB: Failed to fetch translation catalog: %v", err)
+        return "", err
+    }
+    defer func() {
+        _, _ = io.Copy(io.Discard, resp.Body)
+        resp.Body.Close()
+    }()
+
+    if resp.StatusCode != 200 {
+        metaLogger.Error("TMDB: Upstream translations returned status code: %d", resp.StatusCode)
+        return "", fmt.Errorf("TMDB translations error: %d", resp.StatusCode)
+    }
+
+    var transData struct {
+        Translations []struct {
+            ISO639_1 string `json:"iso_639_1"`
+            Data     struct {
+                Title string `json:"title"`
+                Name  string `json:"name"`
+            } `json:"data"`
+        } `json:"translations"`
+    }
+    if err := sonic.ConfigStd.NewDecoder(resp.Body).Decode(&transData); err != nil {
+        return "", err
+    }
+
+    for _, t := range transData.Translations {
+        if t.ISO639_1 == tmdbLang {
+            if isMovie && t.Data.Title != "" {
+                metaLogger.Info("TMDB: Resolved translation title for '%s' in '%s': '%s'", imdbID, tmdbLang, t.Data.Title)
+                return t.Data.Title, nil
+            }
+            if !isMovie && t.Data.Name != "" {
+                metaLogger.Info("TMDB: Resolved translation name for '%s' in '%s': '%s'", imdbID, tmdbLang, t.Data.Name)
+                return t.Data.Name, nil
+            }
+        }
+    }
+
+    metaLogger.Info("TMDB: No translation found for IMDb ID '%s' in language '%s'", imdbID, tmdbLang)
+    return "", nil
 }
 
-// cleanWord converts a string to lowercase and removes non-alphanumeric characters.
-// Features an allocation-free fast-path for already cleaned string inputs.
-func cleanWord(w string) string {
-	hasUpperOrNonAlpha := false
-	for i := 0; i < len(w); i++ {
-		c := w[i]
-		if (c < 'a' || c > 'z') && (c < '0' || c > '9') {
-			hasUpperOrNonAlpha = true
-			break
-		}
-	}
-	if !hasUpperOrNonAlpha {
-		return w
-	}
+// ---------------------------------------------------------------------------
+// IMDb Metadata Lookup Provider
+// ---------------------------------------------------------------------------
 
-	var buf []byte
-	for i := 0; i < len(w); i++ {
-		c := w[i]
-		if c >= 'A' && c <= 'Z' {
-			buf = append(buf, c+32)
-		} else if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
-			buf = append(buf, c)
-		}
-	}
-	return string(buf)
+func imdbMetaProvider(id, preferredLanguage string, enableAltTitles bool, altTitleCountry string) (MetaProviderResponse, error) {
+    parts := strings.Split(id, ":")
+    tt := parts[0]
+    var season, episode string
+    if len(parts) > 1 {
+        season = parts[1]
+    }
+    if len(parts) > 2 {
+        episode = parts[2]
+    }
+
+    metaLogger.Info("Meta: Querying IMDb Suggestions API for ID '%s'...", tt)
+
+    ctx, cancel := context.WithTimeout(context.Background(), metaFetchTimeout)
+    defer cancel()
+
+    url := fmt.Sprintf("https://v2.sg.media-imdb.com/suggestion/t/%s.json", tt)
+    req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
+    req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+    resp, err := fetchWithRetry(ctx, http.DefaultClient, req)
+    if err != nil {
+        metaLogger.Error("Meta: IMDb suggestion lookup failed for ID '%s': %v", tt, err)
+        return MetaProviderResponse{}, err
+    }
+    defer func() {
+        _, _ = io.Copy(io.Discard, resp.Body)
+        resp.Body.Close()
+    }()
+
+    var data struct {
+        D []struct {
+            ID string `json:"id"`
+            L  string `json:"l"`
+            Y  int    `json:"y"`
+        } `json:"d"`
+    }
+    if err := sonic.ConfigStd.NewDecoder(resp.Body).Decode(&data); err != nil {
+        return MetaProviderResponse{}, err
+    }
+
+    var item struct {
+        L string
+        Y int
+    }
+    found := false
+    for _, d := range data.D {
+        if d.ID == tt {
+            item.L = d.L
+            item.Y = d.Y
+            found = true
+            break
+        }
+    }
+    if !found {
+        metaLogger.Warn("Meta: No matching IMDb suggestion record found for ID '%s'", tt)
+        return MetaProviderResponse{}, fmt.Errorf("no IMDb match for %s", tt)
+    }
+
+    originalName := item.L
+    metaLogger.Info("Meta: IMDb suggestion resolved primary title: '%s' (Year: %d)", originalName, item.Y)
+    alternatives := GetAlternativeTitles(originalName)
+
+    var origLang string
+    if useTMDB {
+        altTitles, err := getTMDBAlternativeTitles(tt, enableAltTitles, altTitleCountry)
+        if err == nil && len(altTitles) > 0 {
+            for _, alt := range altTitles {
+                isDup := false
+                for _, existing := range alternatives {
+                    if strings.EqualFold(existing, alt) {
+                        isDup = true
+                        break
+                    }
+                }
+                if !isDup {
+                    alternatives = append(alternatives, alt)
+                }
+            }
+        }
+
+        _, _, origLang, _ = resolveTMDBID(tt)
+    }
+
+    // Inject Transliterations for non-Latin scripts
+    translitName := Transliterate(originalName)
+    if translitName != originalName && translitName != "" {
+        isDup := false
+        for _, existing := range alternatives {
+            if strings.EqualFold(existing, translitName) {
+                isDup = true
+                break
+            }
+        }
+        if !isDup {
+            alternatives = append(alternatives, translitName)
+        }
+    }
+    for _, alt := range alternatives {
+        tAlt := Transliterate(alt)
+        if tAlt != alt && tAlt != "" {
+            isDup := false
+            for _, existing := range alternatives {
+                if strings.EqualFold(existing, tAlt) {
+                    isDup = true
+                    break
+                }
+            }
+            if !isDup {
+                alternatives = append(alternatives, tAlt)
+            }
+        }
+    }
+
+    if preferredLanguage != "" {
+        translated, err := getTMDBTranslatedTitle(tt, preferredLanguage)
+        if err == nil && translated != "" {
+            hasIt := false
+            for _, a := range alternatives {
+                if strings.EqualFold(a, translated) {
+                    hasIt = true
+                    break
+                }
+            }
+            if !hasIt {
+                alternatives = append(alternatives, translated)
+            }
+            sanitized := SanitizeTitle(translated)
+            if sanitized != translated {
+                hasSanitized := false
+                for _, a := range alternatives {
+                    if strings.EqualFold(a, sanitized) {
+                        hasSanitized = true
+                        break
+                    }
+                }
+                if !hasSanitized {
+                    alternatives = append(alternatives, sanitized)
+                }
+            }
+        }
+    }
+
+    return MetaProviderResponse{
+        Name:             originalName,
+        OriginalName:     originalName,
+        AlternativeNames: alternatives,
+        Year:             item.Y,
+        Season:           season,
+        Episode:          episode,
+        OriginalLanguage: origLang,
+    }, nil
 }
 
-// isYearNumber checks if a string is a standard 4-digit release year
-func isYearNumber(s string) bool {
-	return len(s) == 4 && (strings.HasPrefix(s, "19") || strings.HasPrefix(s, "20"))
+// ---------------------------------------------------------------------------
+// Cinemeta Metadata Lookup Provider (Fallback)
+// ---------------------------------------------------------------------------
+
+func cinemetaMetaProvider(id, contentType, preferredLanguage string, enableAltTitles bool, altTitleCountry string) (MetaProviderResponse, error) {
+    parts := strings.Split(id, ":")
+    tt := parts[0]
+    var season, episode string
+    if len(parts) > 1 {
+        season = parts[1]
+    }
+    if len(parts) > 2 {
+        episode = parts[2]
+    }
+
+    metaLogger.Info("Meta: Querying Cinemeta API fallback for ID '%s' (type: '%s')...", tt, contentType)
+
+    ctx, cancel := context.WithTimeout(context.Background(), metaFetchTimeout)
+    defer cancel()
+
+    url := fmt.Sprintf("https://v3-cinemeta.strem.io/meta/%s/%s.json", contentType, tt)
+    req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
+    req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+    resp, err := fetchWithRetry(ctx, http.DefaultClient, req)
+    if err != nil {
+        metaLogger.Error("Meta: Cinemeta fallback lookup failed for ID '%s': %v", tt, err)
+        return MetaProviderResponse{}, err
+    }
+    defer func() {
+        _, _ = io.Copy(io.Discard, resp.Body)
+        resp.Body.Close()
+    }()
+
+    var data struct {
+        Meta struct {
+            Name        string `json:"name"`
+            Year        string `json:"year"`
+            ReleaseInfo string `json:"releaseInfo"`
+        } `json:"meta"`
+    }
+    if err := sonic.ConfigStd.NewDecoder(resp.Body).Decode(&data); err != nil {
+        return MetaProviderResponse{}, err
+    }
+
+    name := data.Meta.Name
+    year := ExtractDigits(data.Meta.Year)
+    if year == nil {
+        year = ExtractDigits(data.Meta.ReleaseInfo)
+    }
+    yearVal := 0
+    if year != nil {
+        yearVal = *year
+    }
+
+    metaLogger.Info("Meta: Cinemeta resolved fallback title: '%s' (Year: %d)", name, yearVal)
+    alternatives := GetAlternativeTitles(name)
+
+    var origLang string
+    if useTMDB {
+        altTitles, err := getTMDBAlternativeTitles(tt, enableAltTitles, altTitleCountry)
+        if err == nil && len(altTitles) > 0 {
+            for _, alt := range altTitles {
+                isDup := false
+                for _, existing := range alternatives {
+                    if strings.EqualFold(existing, alt) {
+                        isDup = true
+                        break
+                    }
+                }
+                if !isDup {
+                    alternatives = append(alternatives, alt)
+                }
+            }
+        }
+
+        _, _, origLang, _ = resolveTMDBID(tt)
+    }
+
+    // Inject Transliterations
+    translitName := Transliterate(name)
+    if translitName != name && translitName != "" {
+        isDup := false
+        for _, existing := range alternatives {
+            if strings.EqualFold(existing, translitName) {
+                isDup = true
+                break
+            }
+        }
+        if !isDup {
+            alternatives = append(alternatives, translitName)
+        }
+    }
+    for _, alt := range alternatives {
+        tAlt := Transliterate(alt)
+        if tAlt != alt && tAlt != "" {
+            isDup := false
+            for _, existing := range alternatives {
+                if strings.EqualFold(existing, tAlt) {
+                    isDup = true
+                    break
+                }
+            }
+            if !isDup {
+                alternatives = append(alternatives, tAlt)
+            }
+        }
+    }
+
+    if preferredLanguage != "" {
+        translated, err := getTMDBTranslatedTitle(tt, preferredLanguage)
+        if err == nil && translated != "" {
+            hasIt := false
+            for _, a := range alternatives {
+                if strings.EqualFold(a, translated) {
+                    hasIt = true
+                    break
+                }
+            }
+            if !hasIt {
+                alternatives = append(alternatives, translated)
+            }
+        }
+    }
+
+    return MetaProviderResponse{
+        Name:             name,
+        OriginalName:     name,
+        AlternativeNames: alternatives,
+        Year:             yearVal,
+        Season:           season,
+        Episode:          episode,
+        OriginalLanguage: origLang,
+    }, nil
 }
 
-// isTechnicalToken performs an allocation-free dynamic check to identify season, episode,
-// and pack-specific serialization tokens, allowing them to safely bypass the guardrail.
-func isTechnicalToken(s string) bool {
-	if metadataWords[s] || stopWords[s] {
-		return true
-	}
+// ---------------------------------------------------------------------------
+// Public Metadata Gateway Interface
+// ---------------------------------------------------------------------------
 
-	if isNumber(s) {
-		return true
-	}
+func PublicMetaProvider(id, contentType, preferredLanguage string, enableAltTitles bool, altTitleCountry string) (MetaProviderResponse, error) {
+    parts := strings.Split(id, ":")
+    tt := parts[0]
 
-	if len(s) >= 2 {
-		first := s[0]
-		if (first == 's' || first == 'e' || first == 'p') && isNumber(s[1:]) {
-			return true
-		}
-		if len(s) >= 3 {
-			prefix2 := s[:2]
-			if (prefix2 == "se" || prefix2 == "ep") && isNumber(s[2:]) {
-				return true
-			}
-		}
-		if len(s) >= 4 {
-			if s[:3] == "epi" && isNumber(s[3:]) {
-				return true
-			}
-		}
-		if len(s) >= 5 {
-			prefix4 := s[:4]
-			if (prefix4 == "seas" || prefix4 == "part") && isNumber(s[4:]) {
-				return true
-			}
-		}
-		if len(s) >= 7 {
-			if s[:6] == "season" && isNumber(s[6:]) {
-				return true
-			}
-		}
-		if len(s) >= 8 {
-			if s[:7] == "episode" && isNumber(s[7:]) {
-				return true
-			}
-		}
-	}
-	return false
-}
+    cacheKey := fmt.Sprintf("%s:%s:%s:%t:%s", tt, contentType, preferredLanguage, enableAltTitles, altTitleCountry)
 
-// passTitleGuardrail prevents single-word titles (e.g. "Up", "It") from matching
-// unrelated multi-word torrents (e.g. "Upgraded", "Italian"). It allows metadata
-// words (codecs, quality tags, languages) to pass through.
-func passTitleGuardrail(targetTitle, parsedTitle string) bool {
-	cleanTarget := strings.Trim(strings.ToLower(targetTitle), " .-_[]()/\\")
-	cleanParsed := strings.Trim(strings.ToLower(parsedTitle), " .-_[]()/\\")
+    if cached, ok := metaResponseCache.Get(cacheKey); ok {
+        metaLogger.Info("Meta Cache HIT for core key '%s'", tt)
+        var season, episode string
+        if len(parts) > 1 {
+            season = parts[1]
+        }
+        if len(parts) > 2 {
+            episode = parts[2]
+        }
+        cached.Season = season
+        cached.Episode = episode
+        return cached, nil
+    }
 
-	if cleanTarget == cleanParsed {
-		return true
-	}
+    res, err, _ := metaSingleflight.Do(cacheKey, func() (interface{}, error) {
+        if cached, ok := metaResponseCache.Get(cacheKey); ok {
+            return cached, nil
+        }
 
-	targetNoArt := stripLeadingArticles(cleanTarget)
-	parsedNoArt := stripLeadingArticles(cleanParsed)
-	if targetNoArt == parsedNoArt {
-		return true
-	}
+        metaLogger.Info("Meta Cache MISS: Resolving fresh metadata for core key '%s'", tt)
 
-	targetWords := strings.Fields(targetNoArt)
-	parsedWords := strings.Fields(parsedNoArt)
+        meta, err := imdbMetaProvider(id, preferredLanguage, enableAltTitles, altTitleCountry)
+        if err == nil && meta.Name != "" {
+            metaResponseCache.Set(cacheKey, meta)
+            return meta, nil
+        }
 
-	// ── UPGRADE: Substantive Word Guardrail ──
-	// Ensure the parsed title doesn't contain unrelated substantive words.
-	// This prevents partial title matches, release group leaks, and unrelated shows.
-	targetWordSet := make(map[string]bool)
-	for _, w := range targetWords {
-		targetWordSet[cleanWord(w)] = true
-	}
+        metaLogger.Debug("IMDb metadata lookup failed, falling back to Cinemeta: %v", err)
 
-	hasUnrelatedSubstantiveWord := false
-	for _, w := range parsedWords {
-		cw := cleanWord(w)
-		if cw == "" {
-			continue
-		}
-		if targetWordSet[cw] || isTechnicalToken(cw) {
-			continue
-		}
-		hasUnrelatedSubstantiveWord = true
-		break
-	}
+        meta, err = cinemetaMetaProvider(id, contentType, preferredLanguage, enableAltTitles, altTitleCountry)
+        if err == nil && meta.Name != "" {
+            metaResponseCache.Set(cacheKey, meta)
+            return meta, nil
+        }
 
-	if hasUnrelatedSubstantiveWord {
-		return false // ❌ REJECTED (Unrelated Substantive Word Detected)
-	}
+        return MetaProviderResponse{}, fmt.Errorf("failed to find metadata for %s", id)
+    })
 
-	// ── UPGRADE: PN-SILEC Multi-Word Franchise Leakage Guardrail ──
-	if len(targetWords) > 1 && len(parsedWords) > len(targetWords) {
-		startsSame := true
-		for i := 0; i < len(targetWords); i++ {
-			if cleanWord(parsedWords[i]) != cleanWord(targetWords[i]) {
-				startsSame = false
-				break
-			}
-		}
+    if err != nil {
+        return MetaProviderResponse{}, err
+    }
 
-		if startsSame {
-			extraWords := parsedWords[len(targetWords):]
-			hasSubstantiveProperNoun := false
-			for _, w := range extraWords {
-				cw := cleanWord(w)
-				if cw == "" {
-					continue
-				}
-				if !isTechnicalToken(cw) {
-					hasSubstantiveProperNoun = true
-					break
-				}
-			}
-			if hasSubstantiveProperNoun {
-				return false // ❌ REJECTED (Substantive Proper-Noun Detected)
-			}
-		}
-	}
+    finalMeta := res.(MetaProviderResponse)
+    var season, episode string
+    if len(parts) > 1 {
+        season = parts[1]
+    }
+    if len(parts) > 2 {
+        episode = parts[2]
+    }
+    finalMeta.Season = season
+    finalMeta.Episode = episode
 
-	// ── Standard Single-Word Title Guardrail (Corrected & Safe) ──
-	if len(targetWords) == 1 {
-		singleWord := cleanWord(targetWords[0])
-		if len(parsedWords) > 1 {
-			hasExtraNonMeta := false
-			for _, w := range parsedWords {
-				cw := cleanWord(w)
-				if cw != "" && cw != singleWord && !isTechnicalToken(cw) {
-					hasExtraNonMeta = true
-					break
-				}
-			}
-			if hasExtraNonMeta {
-				return false // ❌ REJECTED
-			}
-			// If all extra words are only technical metadata tokens (like 1080p, x264), it is a safe match
-			return true
-		}
-	}
-	return true
-}
-
-func getHomoglyphRepresentations(r rune) []rune {
-	if classes, ok := homoglyphClasses[r]; ok {
-		return classes
-	}
-	return []rune{r}
-}
-
-// Global recycled pool for fast map reuse (Zero allocations on map creation)
-var uint64MapPool = sync.Pool{
-	New: func() interface{} {
-		return make(map[uint64]struct{}, 64)
-	},
-}
-
-func clearMap(m map[uint64]struct{}) {
-	for k := range m {
-		delete(m, k)
-	}
-}
-
-// OverlapCoefficient computes the overlap coefficient between two strings
-// using multi-representation homoglyph character bigrams.
-// Fully optimized for zero heap allocations, bitwise rune-packing, and zero GC pressure.
-func OverlapCoefficient(s1, s2 string) float64 {
-	if s1 == s2 {
-		return 1.0
-	}
-
-	if len(s1) < 2 || len(s2) < 2 {
-		return 0.0
-	}
-
-	bg1 := uint64MapPool.Get().(map[uint64]struct{})
-	bg2 := uint64MapPool.Get().(map[uint64]struct{})
-	defer func() {
-		clearMap(bg1)
-		uint64MapPool.Put(bg1)
-		clearMap(bg2)
-		uint64MapPool.Put(bg2)
-	}()
-
-	var lastRune rune
-	hasLast := false
-	for _, r := range s1 {
-		if !hasLast {
-			lastRune = r
-			hasLast = true
-			continue
-		}
-		repsA := getHomoglyphRepresentations(lastRune)
-		repsB := getHomoglyphRepresentations(r)
-		for _, charA := range repsA {
-			for _, charB := range repsB {
-				packed := (uint64(charA) << 32) | uint64(charB)
-				bg1[packed] = struct{}{}
-			}
-		}
-		lastRune = r
-	}
-
-	intersection := 0
-	hasLast = false
-	for _, r := range s2 {
-		if !hasLast {
-			lastRune = r
-			hasLast = true
-			continue
-		}
-		repsA := getHomoglyphRepresentations(lastRune)
-		repsB := getHomoglyphRepresentations(r)
-		for _, charA := range repsA {
-			for _, charB := range repsB {
-				packed := (uint64(charA) << 32) | uint64(charB)
-				if _, ok := bg2[packed]; !ok {
-					bg2[packed] = struct{}{}
-					if _, exists := bg1[packed]; exists {
-						intersection++
-					}
-				}
-			}
-		}
-		lastRune = r
-	}
-
-	if len(bg1) == 0 || len(bg2) == 0 {
-		return 0.0
-	}
-
-	minSize := len(bg1)
-	if len(bg2) < minSize {
-		minSize = len(bg2)
-	}
-
-	return float64(intersection) / float64(minSize)
-}
-
-func isRomanSequence(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, r := range s {
-		if r != 'i' && r != 'v' && r != 'x' && r != 'l' && r != 'c' && r != 'd' && r != 'm' {
-			return false
-		}
-	}
-	return true
-}
-
-func isNumber(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, c := range s {
-		if c < '0' || c > '9' {
-			return false
-		}
-	}
-	return true
-}
-
-func romanToArabic(s string) int {
-	romanMap := map[rune]int{
-		'i': 1, 'v': 5, 'x': 10, 'l': 50, 'c': 100, 'd': 500, 'm': 1000,
-	}
-	total := 0
-	lastVal := 0
-	for i := len(s) - 1; i >= 0; i-- {
-		val, ok := romanMap[rune(s[i])]
-		if !ok {
-			return 0
-		}
-		if val < lastVal {
-			total -= val
-		} else {
-			total += val
-			lastVal = val
-		}
-	}
-	return total
-}
-
-func normalizeNumbersInTitle(title string) string {
-	titleClean := strings.ReplaceAll(title, ":", " ")
-	titleClean = strings.ReplaceAll(titleClean, "-", " ")
-
-	words := strings.Fields(strings.ToLower(titleClean))
-	for i, w := range words {
-		if numDigit, ok := writtenNumbers[w]; ok {
-			words[i] = numDigit
-			continue
-		}
-
-		if isRomanSequence(w) {
-			shouldConvert := false
-			if len(w) >= 2 {
-				shouldConvert = true
-			} else if len(w) == 1 {
-				if i > 0 && sequelContexts[words[i-1]] {
-					shouldConvert = true
-				}
-				if i == len(words)-1 {
-					shouldConvert = true
-				}
-			}
-
-			if shouldConvert {
-				val := romanToArabic(w)
-				if val > 0 {
-					words[i] = strconv.Itoa(val)
-				}
-			}
-		}
-	}
-	return strings.Join(words, " ")
-}
-
-func extractNonYearNumbers(s string) []string {
-	var nums []string
-	var current strings.Builder
-	for _, r := range s {
-		if unicode.IsDigit(r) {
-			current.WriteRune(r)
-		} else {
-			if current.Len() > 0 {
-				val := current.String()
-				if !ignoredNumbers[val] && !isYearNumber(val) {
-					nums = append(nums, val)
-				}
-				current.Reset()
-			}
-		}
-	}
-	if current.Len() > 0 {
-		val := current.String()
-		if !ignoredNumbers[val] && !isYearNumber(val) {
-			nums = append(nums, val)
-		}
-	}
-	return nums
-}
-
-func hasNumericMismatch(target, parsed string) bool {
-	targetNums := extractNonYearNumbers(target)
-	parsedNums := extractNonYearNumbers(parsed)
-
-	if len(targetNums) == 0 || len(parsedNums) == 0 {
-		return false
-	}
-
-	for _, tn := range targetNums {
-		tnInt, err1 := strconv.Atoi(tn)
-		if err1 != nil {
-			continue
-		}
-		for _, pn := range parsedNums {
-			pnInt, err2 := strconv.Atoi(pn)
-			if err2 == nil && tnInt == pnInt {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-func sequelGuardrail(targetTitle, parsedTitle string, score float64) float64 {
-	cleanTarget := strings.Trim(strings.ToLower(targetTitle), " .-_[]()/\\")
-	cleanParsed := strings.Trim(strings.ToLower(parsedTitle), " .-_[]()/\\")
-
-	cleanTarget = normalizeNumbersInTitle(cleanTarget)
-	cleanParsed = normalizeNumbersInTitle(cleanParsed)
-
-	targetNoArt := stripLeadingArticles(cleanTarget)
-	parsedNoArt := stripLeadingArticles(cleanParsed)
-
-	shorter := len(targetNoArt)
-	longer := len(parsedNoArt)
-	if shorter > longer {
-		shorter, longer = longer, shorter
-	}
-
-	if longer == 0 || shorter == 0 {
-		return score
-	}
-
-	ratio := float64(longer) / float64(shorter)
-	if ratio <= 1.3 {
-		return score
-	}
-
-	if !strings.Contains(targetNoArt, parsedNoArt) && !strings.Contains(parsedNoArt, targetNoArt) {
-		return score
-	}
-
-	var longerStr, shorterStr string
-	if len(targetNoArt) > len(parsedNoArt) {
-		longerStr, shorterStr = targetNoArt, parsedNoArt
-	} else {
-		longerStr, shorterStr = parsedNoArt, targetNoArt
-	}
-
-	var extra string
-	if strings.HasPrefix(longerStr, shorterStr) {
-		extra = strings.TrimSpace(longerStr[len(shorterStr):])
-	} else if strings.HasSuffix(longerStr, shorterStr) {
-		extra = strings.TrimSpace(longerStr[:len(longerStr)-len(shorterStr)])
-	} else {
-		return score
-	}
-
-	extraWords := strings.Fields(extra)
-	for _, w := range extraWords {
-		cw := cleanWord(w)
-		// Upgrade: Prevent legitimate release years from destroying movie similarity scores [1]
-		if isRomanSequence(cw) || (isNumber(cw) && !isYearNumber(cw)) || sequelIndicators[cw] {
-			return score * (float64(shorter) / float64(longer))
-		}
-	}
-
-	return score
-}
-
-func getTitleSimilarity(tmdbTitle, torrentName string) float64 {
-	if tmdbTitle == "" {
-		return 0
-	}
-	parsed := RobustParseInfo(torrentName, 0)
-	if parsed.Title == "" {
-		return 0
-	}
-
-	cleanTmdb := strings.Trim(strings.ToLower(tmdbTitle), " .-_[]()/\\")
-	cleanParsed := strings.Trim(strings.ToLower(parsed.Title), " .-_[]()/\\")
-
-	cleanTmdb = normalizeNumbersInTitle(cleanTmdb)
-	cleanParsed = normalizeNumbersInTitle(cleanParsed)
-
-	if hasNumericMismatch(cleanTmdb, cleanParsed) {
-		return 0.0
-	}
-
-	oc := OverlapCoefficient(cleanTmdb, cleanParsed)
-
-	cleanTmdbNoArt := stripLeadingArticles(cleanTmdb)
-	cleanParsedNoArt := stripLeadingArticles(cleanParsed)
-	if cleanTmdbNoArt != cleanTmdb || cleanParsedNoArt != cleanParsed {
-		ocClean := OverlapCoefficient(cleanTmdbNoArt, cleanParsedNoArt)
-		if ocClean > oc {
-			oc = ocClean
-		}
-	}
-
-	oc = sequelGuardrail(tmdbTitle, parsed.Title, oc)
-
-	return oc
-}
-
-// stripDiacritics maps standard Latin-1 and advanced unicode diacritics to ASCII base characters
-func stripDiacritics(s string) string {
-	var replacer = strings.NewReplacer(
-		"ā", "a", "á", "a", "à", "a", "ä", "a", "â", "a", "ã", "a", "å", "a",
-		"ē", "e", "é", "e", "è", "e", "ë", "e", "ê", "e",
-		"ī", "i", "í", "i", "ì", "i", "ï", "i", "î", "i",
-		"ō", "o", "ó", "o", "ò", "o", "ö", "o", "ô", "o", "õ", "o", "ø", "o",
-		"ū", "u", "ú", "u", "ù", "u", "ü", "u", "û", "u",
-		"ý", "y", "ÿ", "y",
-		"ñ", "n", "ç", "c",
-		"Ā", "A", "Á", "A", "À", "A", "Ä", "A", "Â", "A", "Ã", "A", "Å", "A",
-		"Ē", "E", "É", "E", "È", "E", "Ë", "E", "Ê", "E",
-		"Ī", "I", "Í", "I", "Ì", "I", "Ï", "I", "Î", "I",
-		"Ō", "O", "Ó", "O", "Ò", "O", "Ö", "O", "Ô", "O", "Õ", "O", "Ø", "O",
-		"Ū", "U", "Ú", "U", "Ù", "U", "Ü", "U", "Û", "U",
-		"Ý", "Y", "Ñ", "N", "Ç", "C",
-	)
-	return replacer.Replace(s)
-}
-
-// injectNormalizedAltTitle adds the un-accented ASCII representation to AltTitles if it differs from the primary name
-func injectNormalizedAltTitle(name string, alts []string) []string {
-	normalized := stripDiacritics(name)
-	if normalized != name {
-		isUnique := true
-		for _, existing := range alts {
-			if existing == normalized {
-				isUnique = false
-				break
-			}
-		}
-		if isUnique {
-			alts = append(alts, normalized)
-		}
-	}
-	return alts
+    return finalMeta, nil
 }
