@@ -23,8 +23,6 @@ func isMultiWord(title string) bool {
     return len(strings.Fields(title)) > 1
 }
 
-// Issue #1 Fix: Removed local SortMeta definition. It is canonically defined in types.go.
-
 type AddonConfig struct {
     Username             string `json:"username"`
     Password             string `json:"password"`
@@ -193,7 +191,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
         return StreamHandlerResult{Streams: []Stream{}}, nil
     }
 
-    cacheKey := fmt.Sprintf("%s:v8:user=%s:strict=%s:lang=%s:sort=%s:qualities=%s:maxPerQuality=%s:maxSize=%s:enableAlt=%s:altCountry=%s",
+    cacheKey := fmt.Sprintf("%s:v9:user=%s:strict=%s:lang=%s:sort=%s:qualities=%s:maxPerQuality=%s:maxSize=%s:enableAlt=%s:altCountry=%s",
         id,
         config.Username,
         config.StrictTitleMatching,
@@ -270,7 +268,6 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
         }
     }
 
-    // H2 Fix: Expand abbreviations and add to allTitles for search
     for _, tv := range allTitles {
         expanded := ExpandAbbreviations(tv)
         if expanded != tv {
@@ -287,7 +284,6 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
         }
     }
 
-    // E3 & H4 Fix: Skip non-Latin titles for search and deduplicate queries
     buildQueries := func(withYear bool) []string {
         var queries []string
         seen := make(map[string]bool)
@@ -509,7 +505,6 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
                     continue
                 }
 
-                // Issue #4 Fix: Explicit OVA/ONA/OAD rejection in main stream pipeline
                 if targetEpisode > 0 && isExtraOrSpecial(title) {
                     rejectedTitle++
                     continue
@@ -531,7 +526,6 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
                     if (parsedInfo.Season > 0 && parsedInfo.Season != targetSeason) ||
                         (parsedInfo.Episode > 0 && !episodeMatches && !hasRange && !isPack && !parsedInfo.IsPack) {
                         
-                        // E2 Fix: Accept absolute-numbered episodes (Season=0, Episode>0)
                         if parsedInfo.Season == 0 && parsedInfo.Episode > 0 {
                             // Skip rejection
                         } else {
@@ -977,7 +971,6 @@ func MapStream(duration, size, fullResolution, title, fileExtension string, vide
     if releaseGroup != "" {
         bingeGroup = fmt.Sprintf("easynews-plus-plus|%s|%s|%s|%s", quality, bingeLang, fileExtension, releaseGroup)
     } else {
-        // Issue #3 Fix: Bounds check for hash slice to prevent panic
         hashSuffix := file.GetHash()
         if len(hashSuffix) > 8 {
             hashSuffix = hashSuffix[:8]
