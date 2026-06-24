@@ -19,20 +19,15 @@ import (
 
 var addonLogger = shared.CreateLogger("Addon", "")
 
-// Helper to determine if a title contains multiple words (preventing stop-word/index explosions)
 func isMultiWord(title string) bool {
     return len(strings.Fields(title)) > 1
 }
 
-// ---------------------------------------------------------------------------
-// SortMeta Struct Definition (Ensure it matches this definition in your codebase)
-// ---------------------------------------------------------------------------
-
 type SortMeta struct {
     QualityScore     int
-    SourceScore      int     // 8=Remux, 7=BluRay, 6=WEB-DL, 5=HDTV, 4=HDRip, 3=DVDRip, 2=CAM, 1=TS, 0=unknown
-    HDRScore         int     // 4=DV, 3=HDR10+, 2=HDR10, 1=HDR, 0=SDR
-    CodecScore       int     // 3=AV1, 2=HEVC, 1=AVC, 0=other
+    SourceScore      int
+    HDRScore         int
+    CodecScore       int
     SizeUnit         string
     SizeValue        float64
     DateMs           int64
@@ -41,10 +36,6 @@ type SortMeta struct {
     IsRepack         bool
     Edition          string
 }
-
-// ---------------------------------------------------------------------------
-// Addon Configuration
-// ---------------------------------------------------------------------------
 
 type AddonConfig struct {
     Username             string `json:"username"`
@@ -72,8 +63,6 @@ var defaultConfig = AddonConfig{
     MaxFileSize:          "0",
 }
 
-// ParseConfig decodes a base64-encoded configuration payload or extracts
-// query fields from a URL query-styled parameters string.
 func ParseConfig(configStr string) AddonConfig {
     config := defaultConfig
 
@@ -81,7 +70,6 @@ func ParseConfig(configStr string) AddonConfig {
         return config
     }
 
-    // 1. Try URL-decoded JSON parsing
     if decodedStr, err := url.QueryUnescape(configStr); err == nil {
         if strings.HasPrefix(decodedStr, "{") && strings.HasSuffix(decodedStr, "}") {
             var jsonConfig AddonConfig
@@ -93,7 +81,6 @@ func ParseConfig(configStr string) AddonConfig {
         }
     }
 
-    // 2. Try URL query format
     normalized := strings.ReplaceAll(configStr, "|", "&")
     normalized = strings.ReplaceAll(normalized, ";", "&")
 
@@ -114,7 +101,6 @@ func ParseConfig(configStr string) AddonConfig {
         return config
     }
 
-    // 3. Try URL-safe Base64 JSON parsing
     decoded, err := base64.URLEncoding.DecodeString(configStr)
     if err == nil {
         var b64Config AddonConfig
@@ -127,10 +113,6 @@ func ParseConfig(configStr string) AddonConfig {
 
     return config
 }
-
-// ---------------------------------------------------------------------------
-// In-Memory Request Cache
-// ---------------------------------------------------------------------------
 
 var (
     requestCache           = make(map[string]*cacheItem)
@@ -182,10 +164,6 @@ func setRequestCache(key string, data StreamHandlerResult, ttl time.Duration) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Diagnostic Error Payload Stream Results
-// ---------------------------------------------------------------------------
-
 type StreamHandlerResult struct {
     Streams     []Stream `json:"streams"`
     CacheMaxAge int      `json:"cacheMaxAge,omitempty"`
@@ -222,16 +200,12 @@ func configErrorStream() StreamHandlerResult {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Main Stream Resolution Pipeline Entry
-// ---------------------------------------------------------------------------
-
 func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerResult, error) {
     if !strings.HasPrefix(id, "tt") {
         return StreamHandlerResult{Streams: []Stream{}}, nil
     }
 
-    cacheKey := fmt.Sprintf("%s:v6:user=%s:strict=%s:lang=%s:sort=%s:qualities=%s:maxPerQuality=%s:maxSize=%s:enableAlt=%s:altCountry=%s",
+    cacheKey := fmt.Sprintf("%s:v7:user=%s:strict=%s:lang=%s:sort=%s:qualities=%s:maxPerQuality=%s:maxSize=%s:enableAlt=%s:altCountry=%s",
         id,
         config.Username,
         config.StrictTitleMatching,
@@ -308,11 +282,32 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
         }
     }
 
-    // P1.3 Fix: Use BuildSearchQueryVariants
+    // H2 Fix: Expand abbreviations and add to allTitles for search
+    for _, tv := range allTitles {
+        expanded := ExpandAbbreviations(tv)
+        if expanded != tv {
+            isDup := false
+            for _, existing := range allTitles {
+                if SanitizeTitle(existing) == SanitizeTitle(expanded) {
+                    isDup = true
+                    break
+                }
+            }
+            if !isDup {
+                allTitles = append(allTitles, expanded)
+            }
+        }
+    }
+
+    // E3 & H4 Fix: Skip non-Latin titles for search and deduplicate queries
     buildQueries := func(withYear bool) []string {
         var queries []string
+        seen := make(map[string]bool)
         for _, titleVariant := range allTitles {
             if strings.TrimSpace(titleVariant) == "" {
+                continue
+            }
+            if !IsLatinString(titleVariant) {
                 continue
             }
             m := meta
@@ -320,7 +315,12 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
             if !withYear {
                 m.Year = 0
             }
-            queries = append(queries, BuildSearchQueryVariants(contentType, m)...)
+            for _, q := range BuildSearchQueryVariants(contentType, m) {
+                if !seen[q] {
+                    seen[q] = true
+                    queries = append(queries, q)
+                }
+            }
         }
         return queries
     }
@@ -429,16 +429,14 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
         }
     }
 
-    // Gap B Fix: Parse target season/episode early for fallback searches
     targetSeason, _ := strconv.Atoi(meta.Season)
     targetEpisode, _ := strconv.Atoi(meta.Episode)
 
-    // Phase 3 Fallback: Anime Absolute Numbering
     if contentType == "series" && totalFoundResults < 5 && targetEpisode > 0 {
         addonLogger.Info("Low results (%d) for series '%s'. Running absolute episode fallback search...", totalFoundResults, meta.Name)
         var absFallbackQueries []string
         for _, titleVariant := range allTitles {
-            if strings.TrimSpace(titleVariant) == "" {
+            if strings.TrimSpace(titleVariant) == "" || !IsLatinString(titleVariant) {
                 continue
             }
             absFallbackQueries = append(absFallbackQueries, fmt.Sprintf("%s %d !sample !trailer !passwd !password !preview", titleVariant, targetEpisode))
@@ -450,12 +448,11 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
         }
     }
 
-    // Phase 4 Fallback: If results are extremely low for multi-word series, run title-only search
     if contentType == "series" && totalFoundResults < 5 && isMultiWord(meta.Name) {
         addonLogger.Info("Low results (%d) for multi-word series '%s'. Running title-only fallback search...", totalFoundResults, meta.Name)
         var titleFallbackQueries []string
         for _, titleVariant := range allTitles {
-            if strings.TrimSpace(titleVariant) == "" || !isMultiWord(titleVariant) {
+            if strings.TrimSpace(titleVariant) == "" || !isMultiWord(titleVariant) || !IsLatinString(titleVariant) {
                 continue
             }
             m := MetaProviderResponse{Name: titleVariant}
@@ -540,13 +537,11 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
                     if (parsedInfo.Season > 0 && parsedInfo.Season != targetSeason) ||
                         (parsedInfo.Episode > 0 && !episodeMatches && !hasRange && !isPack && !parsedInfo.IsPack) {
                         
-                        // P1.5 Fix: Accept absolute-numbered episodes when episode number matches target
-                        isAbsoluteMatch := false
-                        if parsedInfo.Season == 0 && parsedInfo.Episode > 0 && parsedInfo.Episode == targetEpisode {
-                            isAbsoluteMatch = true
-                        }
-
-                        if !isAbsoluteMatch {
+                        // E2 Fix: Accept absolute-numbered episodes (Season=0, Episode>0)
+                        // instead of rejecting them. The title matcher verified the show name.
+                        if parsedInfo.Season == 0 && parsedInfo.Episode > 0 {
+                            // Skip rejection
+                        } else {
                             rejectedTitle++
                             continue
                         }
@@ -577,7 +572,6 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
                     continue
                 }
 
-                // Tightened movie year tolerance to ±1 year
                 if meta.Year > 0 && parsedInfo.Year > 0 {
                     diff := parsedInfo.Year - meta.Year
                     if diff < 0 {
@@ -621,10 +615,6 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 
     addonLogger.Info("Search complete: totalFilesSeen=%d matchingCount=%d (rejected: sample/quality=%d, duplicate=%d, titleMismatch=%d)",
         totalFilesSeen, len(streams), rejectedSample, rejectedDuplicate, rejectedTitle)
-
-    // -----------------------------------------------------------------------
-    // Low-Latency Sorting Pipeline (P1.4 Fix: Integrated SourceScore/HDRScore/CodecScore)
-    // -----------------------------------------------------------------------
 
     calculateTotalScore := func(a *SortMeta) int {
         if a == nil {
@@ -749,10 +739,6 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
             })
         }
     }
-
-    // -----------------------------------------------------------------------
-    // Post-Sorting Local Filters
-    // -----------------------------------------------------------------------
 
     if len(streams) > 0 {
         defaultQualitySet := []string{"4k", "1080p", "720p", "480p"}
@@ -911,10 +897,6 @@ func hasAll(haystack, needles []string) bool {
     return true
 }
 
-// ---------------------------------------------------------------------------
-// Single Stream Resource Mapping (P1.4 & P2.3 Fix: Extended SortMeta & Binge Group)
-// ---------------------------------------------------------------------------
-
 func MapStream(duration, size, fullResolution, title, fileExtension string, videoSize int64, url string, file api.FileData, preferredLang string, parsedInfo *ParseResult) Stream {
     quality := GetQuality(title, fullResolution)
     badges := FormatBadges(title)
@@ -946,16 +928,15 @@ func MapStream(duration, size, fullResolution, title, fileExtension string, vide
     }
     hasPreferredLang := preferredLang != "" && file.Alangs != nil && contains(file.Alangs, preferredLang)
 
-    // P1.4 Fix: Calculate SourceScore, HDRScore, CodecScore
+    // E1 & H1 Fix: Removed "TS" substring check to prevent DTS audio mismatches. Added WEBRip.
     sourceScore := 0
     if strings.Contains(badges, "Remux") { sourceScore = 8 }
     else if strings.Contains(badges, "BluRay") { sourceScore = 7 }
     else if strings.Contains(badges, "WEB-DL") { sourceScore = 6 }
+    else if strings.Contains(badges, "WEBRip") { sourceScore = 5 }
     else if strings.Contains(badges, "HDTV") { sourceScore = 5 }
     else if strings.Contains(badges, "HDRip") { sourceScore = 4 }
     else if strings.Contains(badges, "DVDRip") { sourceScore = 3 }
-    else if strings.Contains(badges, "CAM") { sourceScore = 2 }
-    else if strings.Contains(badges, "TS") { sourceScore = 1 }
 
     hdrScore := 0
     if strings.Contains(badges, "DV") { hdrScore = 4 }
@@ -963,10 +944,11 @@ func MapStream(duration, size, fullResolution, title, fileExtension string, vide
     else if strings.Contains(badges, "HDR10") { hdrScore = 2 }
     else if strings.Contains(badges, "HDR") { hdrScore = 1 }
 
+    // M2 Fix: Added AV1 CodecScore check
     codecScore := 0
-    if strings.Contains(badges, "H265 HEVC") { codecScore = 2 }
+    if strings.Contains(badges, "AV1") { codecScore = 3 }
+    else if strings.Contains(badges, "H265 HEVC") { codecScore = 2 }
     else if strings.Contains(badges, "H264 AVC") { codecScore = 1 }
-    // AV1 detection could be added here if badges supported it
 
     sortMeta := &SortMeta{
         QualityScore:     QualityScoreFromLabel(quality),
@@ -996,12 +978,17 @@ func MapStream(duration, size, fullResolution, title, fileExtension string, vide
         bingeLang = strings.Join(sortedLangs, ",")
     }
 
-    // P2.3 Fix: Include ReleaseGroup in Binge Group
-    releaseGroup := "unknown"
+    // M5 Fix: If release group is missing, append unique file hash to prevent incorrect seamless grouping
+    releaseGroup := ""
     if parsedInfo != nil && parsedInfo.ReleaseGroup != "" {
         releaseGroup = parsedInfo.ReleaseGroup
     }
-    bingeGroup := fmt.Sprintf("easynews-plus-plus|%s|%s|%s|%s", quality, bingeLang, fileExtension, releaseGroup)
+    var bingeGroup string
+    if releaseGroup != "" {
+        bingeGroup = fmt.Sprintf("easynews-plus-plus|%s|%s|%s|%s", quality, bingeLang, fileExtension, releaseGroup)
+    } else {
+        bingeGroup = fmt.Sprintf("easynews-plus-plus|%s|%s|%s|unique:%s", quality, bingeLang, fileExtension, file.GetHash()[:8])
+    }
 
     name := "Easynews++"
     if quality != "" {
