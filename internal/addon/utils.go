@@ -1,18 +1,18 @@
 package addon
 
 import (
-	"encoding/base64"
-	"fmt"
-	"net/url"
-	"os"
-	"path"
-	"regexp"
-	"strconv"
-	"strings"
-	"time"
+    "encoding/base64"
+    "fmt"
+    "net/url"
+    "os"
+    "path"
+    "regexp"
+    "strconv"
+    "strings"
+    "time"
 
-	"github.com/kiskey/stremio-easynews-go/internal/api"
-	"github.com/kiskey/stremio-easynews-go/internal/shared"
+    "github.com/kiskey/stremio-easynews-go/internal/api"
+    "github.com/kiskey/stremio-easynews-go/internal/shared"
 )
 
 // ---------------------------------------------------------------------------
@@ -20,80 +20,61 @@ import (
 // ---------------------------------------------------------------------------
 
 var (
-	shortDurationRe   = regexp.MustCompile(`^\d+s`)
-	veryShortDurRe    = regexp.MustCompile(`^[0-5]m`)
-	separatorsRe      = regexp.MustCompile(`[\.\-_:\s]+`)
-	bracketsRe        = regexp.MustCompile(`[\[\]\(\){}]`)
-	nonAlphanumericRe = regexp.MustCompile(`[^\w\s\x{00C0}-\x{00FF}]`)
-	seasonEpisodeRe   = regexp.MustCompile(`(?i)(s\d+e\d+|\b\d+x\d+\b)`)
-	yearPatternRe     = regexp.MustCompile(`\b(19\d{2}|20\d{2})\b`)
-	fourDigitYearRe   = regexp.MustCompile(`\b(\d{4})\b`)
-	digitsOnlyRe      = regexp.MustCompile(`\d+`)
-	floatValueRe      = regexp.MustCompile(`[\d.]+`)
+    shortDurationRe   = regexp.MustCompile(`^\d+s`)
+    veryShortDurRe    = regexp.MustCompile(`^[0-5]m`)
+    separatorsRe      = regexp.MustCompile(`[\.\-_:\s]+`)
+    bracketsRe        = regexp.MustCompile(`[\[\]\(\){}]`)
+    nonAlphanumericRe = regexp.MustCompile(`[^\w\s\x{00C0}-\x{00FF}]`)
+    seasonEpisodeRe   = regexp.MustCompile(`(?i)(s\d+e\d+|\b\d+x\d+\b)`)
+    yearPatternRe     = regexp.MustCompile(`\b(19\d{2}|20\d{2})\b`)
+    fourDigitYearRe   = regexp.MustCompile(`\b(\d{4})\b`)
+    digitsOnlyRe      = regexp.MustCompile(`\d+`)
+    floatValueRe      = regexp.MustCompile(`[\d.]+`)
 
-	// Compiled with case-insensitive (?i) flags to prevent strings.ToLower allocations
-	fallbackQualityPatterns = []struct {
-		re      *regexp.Regexp
-		quality string
-	}{
-		{regexp.MustCompile(`(?i)\b720p\b`), "720p"},
-		{regexp.MustCompile(`(?i)\b1080p\b`), "1080p"},
-		{regexp.MustCompile(`(?i)\b2160p\b`), "4K/2160p"},
-		{regexp.MustCompile(`(?i)\b4k\b`), "4K"},
-		{regexp.MustCompile(`(?i)\buhd\b`), "4K/UHD"},
-		{regexp.MustCompile(`(?i)\bhdr\b`), "HDR"},
-		{regexp.MustCompile(`(?i)\bhq\b`), "HQ"},
-		{regexp.MustCompile(`(?i)\bbdrip\b`), "BDRip"},
-		{regexp.MustCompile(`(?i)\bbluray\b`), "BluRay"},
-		{regexp.MustCompile(`(?i)\bweb-?dl\b`), "WEB-DL"},
-	}
+    // Compiled with case-insensitive (?i) flags to prevent strings.ToLower allocations
+    fallbackQualityPatterns = []struct {
+        re      *regexp.Regexp
+        quality string
+    }{
+        {regexp.MustCompile(`(?i)\b720p\b`), "720p"},
+        {regexp.MustCompile(`(?i)\b1080p\b`), "1080p"},
+        {regexp.MustCompile(`(?i)\b2160p\b`), "4K/2160p"},
+        {regexp.MustCompile(`(?i)\b4k\b`), "4K"},
+        {regexp.MustCompile(`(?i)\buhd\b`), "4K/UHD"},
+        {regexp.MustCompile(`(?i)\bhdr\b`), "HDR"},
+        {regexp.MustCompile(`(?i)\bhq\b`), "HQ"},
+        {regexp.MustCompile(`(?i)\bbdrip\b`), "BDRip"},
+        {regexp.MustCompile(`(?i)\bbluray\b`), "BluRay"},
+        {regexp.MustCompile(`(?i)\bweb-?dl\b`), "WEB-DL"},
+    }
 )
-
-// IsLatinString checks if a string contains exclusively ASCII printable characters
-// or standard European accented Latin-1 Supplement characters (German, Spanish, French, etc.).
-// Rejects Japanese, Korean, Chinese, Arabic, and Cyrillic character sets.
-// Optimized down to a single branch-predicted CPU instruction.
-func IsLatinString(s string) bool {
-	for _, r := range s {
-		if r > 0x00FF {
-			return false
-		}
-	}
-	return true
-}
-
-// GetAlternativeTitles serves as a clean, backward-compatible stub returning the main title.
-// Advanced alternate titles are now fetched dynamically via the TMDB API inside the meta module.
-func GetAlternativeTitles(title string) []string {
-	return []string{title}
-}
 
 // ---------------------------------------------------------------------------
 // Bad Video Logic
 // ---------------------------------------------------------------------------
 
 func IsBadVideo(file api.FileData) bool {
-	duration := file.GetDuration()
+    duration := file.GetDuration()
 
-	if shortDurationRe.MatchString(duration) {
-		return true
-	}
-	if veryShortDurRe.MatchString(duration) {
-		return true
-	}
-	if file.Passwd {
-		return true
-	}
-	if file.Virus {
-		return true
-	}
-	if !strings.EqualFold(file.Type, "VIDEO") {
-		return true
-	}
-	if file.RawSize > 0 && file.RawSize < 20*1024*1024 {
-		return true // < 20MB
-	}
-	return false
+    if shortDurationRe.MatchString(duration) {
+        return true
+    }
+    if veryShortDurRe.MatchString(duration) {
+        return true
+    }
+    if file.Passwd {
+        return true
+    }
+    if file.Virus {
+        return true
+    }
+    if !strings.EqualFold(file.Type, "VIDEO") {
+        return true
+    }
+    if file.RawSize > 0 && file.RawSize < 20*1024*1024 {
+        return true // < 20MB
+    }
+    return false
 }
 
 // ---------------------------------------------------------------------------
@@ -102,19 +83,19 @@ func IsBadVideo(file api.FileData) bool {
 
 // Precompiled replacer collapses 9 sequential string sweeps into a single-pass, single-allocation statement.
 var titleReplacer = strings.NewReplacer(
-	"ä", "ae", "ö", "oe", "ü", "ue", "ß", "ss",
-	"Ä", "Ae", "Ö", "Oe", "Ü", "Ue", "&", "and",
+    "ä", "ae", "ö", "oe", "ü", "ue", "ß", "ss",
+    "Ä", "Ae", "Ö", "Oe", "Ü", "Ue", "&", "and",
 )
 
 func SanitizeTitle(title string) string {
-	result := titleReplacer.Replace(title)
-	result = separatorsRe.ReplaceAllString(result, " ")
-	result = bracketsRe.ReplaceAllString(result, " ")
-	result = nonAlphanumericRe.ReplaceAllString(result, "")
-	
-	result = strings.ToLower(result)
-	result = strings.TrimSpace(result)
-	return result
+    result := titleReplacer.Replace(title)
+    result = separatorsRe.ReplaceAllString(result, " ")
+    result = bracketsRe.ReplaceAllString(result, " ")
+    result = nonAlphanumericRe.ReplaceAllString(result, "")
+    
+    result = strings.ToLower(result)
+    result = strings.TrimSpace(result)
+    return result
 }
 
 // ---------------------------------------------------------------------------
@@ -122,28 +103,28 @@ func SanitizeTitle(title string) string {
 // ---------------------------------------------------------------------------
 
 func MatchesTitle(title, query string, strict bool) bool {
-	if !strict {
-		// Lenient Fallback: Case-insensitive substring matching when strict matching is disabled
-		sanitizedTitle := SanitizeTitle(title)
-		sanitizedQuery := SanitizeTitle(query)
-		return strings.Contains(sanitizedTitle, sanitizedQuery) || strings.Contains(sanitizedQuery, sanitizedTitle)
-	}
+    if !strict {
+        // Lenient Fallback: Case-insensitive substring matching when strict matching is disabled
+        sanitizedTitle := SanitizeTitle(title)
+        sanitizedQuery := SanitizeTitle(query)
+        return strings.Contains(sanitizedTitle, sanitizedQuery) || strings.Contains(sanitizedQuery, sanitizedTitle)
+    }
 
-	// Parse the raw title first using our robust parser
-	parsed := RobustParseInfo(title, 0)
-	if parsed == nil || parsed.Title == "" {
-		return false
-	}
+    // Parse the raw title first using our robust parser
+    parsed := RobustParseInfo(title, 0)
+    if parsed == nil || parsed.Title == "" {
+        return false
+    }
 
-	// ── UPGRADE: PN-SILEC Franchise Leakage Guardrail ──
-	// Pass the parsed title instead of the raw filename!
-	if !passTitleGuardrail(query, parsed.Title) {
-		return false
-	}
+    // ── UPGRADE: PN-SILEC Franchise Leakage Guardrail ──
+    // Pass the parsed title instead of the raw filename!
+    if !passTitleGuardrail(query, parsed.Title) {
+        return false
+    }
 
-	// Perform robust, homoglyph-aware title similarity assessment
-	similarity := getTitleSimilarity(query, title)
-	return similarity >= 0.80
+    // Perform robust, homoglyph-aware title similarity assessment
+    similarity := getTitleSimilarity(query, title)
+    return similarity >= 0.80
 }
 
 // ---------------------------------------------------------------------------
@@ -151,7 +132,7 @@ func MatchesTitle(title, query string, strict bool) bool {
 // ---------------------------------------------------------------------------
 
 type MissingBaseUrlError struct {
-	msg string
+    msg string
 }
 
 func (e *MissingBaseUrlError) Error() string { return e.msg }
@@ -161,43 +142,43 @@ func (e *MissingBaseUrlError) Error() string { return e.msg }
 // ---------------------------------------------------------------------------
 
 func CreateStreamUrl(downURL string, dlFarm string, dlPort int, username, password, filePath, baseUrl string) (string, error) {
-	effectiveBaseUrl := baseUrl
-	if effectiveBaseUrl == "" {
-		effectiveBaseUrl = os.Getenv("ADDON_BASE_URL")
-	}
+    effectiveBaseUrl := baseUrl
+    if effectiveBaseUrl == "" {
+        effectiveBaseUrl = os.Getenv("ADDON_BASE_URL")
+    }
 
-	// Safeguard: Escape any raw spaces in file paths before constructing target URLs to prevent parsing failures
-	sanitizedFilePath := strings.ReplaceAll(filePath, " ", "%20")
+    // Safeguard: Escape any raw spaces in file paths before constructing target URLs to prevent parsing failures
+    sanitizedFilePath := strings.ReplaceAll(filePath, " ", "%20")
 
-	if effectiveBaseUrl == "" {
-		if os.Getenv("ALLOW_INSECURE_CREDENTIAL_URLS") == "true" {
-			url := fmt.Sprintf("%s/%s/%d/%s",
-				strings.Replace(downURL, "https://", fmt.Sprintf("https://%s:%s@", username, password), 1),
-				dlFarm, dlPort, sanitizedFilePath)
-			return url, nil
-		}
-		return "", &MissingBaseUrlError{
-			msg: "createStreamUrl: no baseUrl available. Re-install via /configure or set ADDON_BASE_URL",
-		}
-	}
+    if effectiveBaseUrl == "" {
+        if os.Getenv("ALLOW_INSECURE_CREDENTIAL_URLS") == "true" {
+            url := fmt.Sprintf("%s/%s/%d/%s",
+                strings.Replace(downURL, "https://", fmt.Sprintf("https://%s:%s@", username, password), 1),
+                dlFarm, dlPort, sanitizedFilePath)
+            return url, nil
+        }
+        return "", &MissingBaseUrlError{
+            msg: "createStreamUrl: no baseUrl available. Re-install via /configure or set ADDON_BASE_URL",
+        }
+    }
 
-	fullUrl := fmt.Sprintf("%s/%s/%d/%s", downURL, dlFarm, dlPort, sanitizedFilePath)
-	authUrl := fmt.Sprintf("%s?u=%s&p=%s", fullUrl, url.QueryEscape(username), url.QueryEscape(password))
-	
-	// Optimized: Uses RawURLEncoding (unpadded) to match Node's 'base64url' output exactly, preventing player URL parsing errors
-	encodedUrl := base64.RawURLEncoding.EncodeToString([]byte(authUrl))
-	
-	fileName := path.Base(filePath)
-	normalizedBase := strings.TrimRight(effectiveBaseUrl, "/")
+    fullUrl := fmt.Sprintf("%s/%s/%d/%s", downURL, dlFarm, dlPort, sanitizedFilePath)
+    authUrl := fmt.Sprintf("%s?u=%s&p=%s", fullUrl, url.QueryEscape(username), url.QueryEscape(password))
+    
+    // Optimized: Uses RawURLEncoding (unpadded) to match Node's 'base64url' output exactly, preventing player URL parsing errors
+    encodedUrl := base64.RawURLEncoding.EncodeToString([]byte(authUrl))
+    
+    fileName := path.Base(filePath)
+    normalizedBase := strings.TrimRight(effectiveBaseUrl, "/")
 
-	return fmt.Sprintf("%s/resolve/%s/%s", normalizedBase, encodedUrl, fileName), nil
+    return fmt.Sprintf("%s/resolve/%s/%s", normalizedBase, encodedUrl, fileName), nil
 }
 
 func CreateStreamPath(file api.FileData) string {
-	postHash := file.GetHash()
-	postTitle := file.GetPostTitle()
-	ext := file.GetPathExt()
-	return postHash + ext + "/" + postTitle + ext
+    postHash := file.GetHash()
+    postTitle := file.GetPostTitle()
+    ext := file.GetPathExt()
+    return postHash + ext + "/" + postTitle + ext
 }
 
 // ---------------------------------------------------------------------------
@@ -205,37 +186,37 @@ func CreateStreamPath(file api.FileData) string {
 // ---------------------------------------------------------------------------
 
 func GetQuality(title string, fallbackResolution string) string {
-	parsed := RobustParseInfo(title, 0)
-	if parsed != nil && parsed.Quality != "" && parsed.Quality != "sd" {
-		// Map common format of "4k" to uppercase "4K" to match stream naming style
-		if parsed.Quality == "4k" {
-			return "4K"
-		}
-		return parsed.Quality
-	}
+    parsed := RobustParseInfo(title, 0)
+    if parsed != nil && parsed.Quality != "" && parsed.Quality != "sd" {
+        // Map common format of "4k" to uppercase "4K" to match stream naming style
+        if parsed.Quality == "4k" {
+            return "4K"
+        }
+        return parsed.Quality
+    }
 
-	// Zero-Allocation Hot Path Match: No string.ToLower() dynamic heap allocation
-	for _, p := range fallbackQualityPatterns {
-		if p.re.MatchString(title) {
-			return p.quality
-		}
-	}
+    // Zero-Allocation Hot Path Match: No string.ToLower() dynamic heap allocation
+    for _, p := range fallbackQualityPatterns {
+        if p.re.MatchString(title) {
+            return p.quality
+        }
+    }
 
-	if fallbackResolution != "" {
-		// Allocation-Free parsing using direct Boyer-Moore primitive substring scans
-		cleanRes := strings.ReplaceAll(strings.ToLower(fallbackResolution), " ", "")
-		if strings.Contains(cleanRes, "3840x2160") || strings.Contains(cleanRes, "2160p") {
-			return "4K"
-		}
-		if strings.Contains(cleanRes, "1920x1080") || strings.Contains(cleanRes, "1080p") {
-			return "1080p"
-		}
-		if strings.Contains(cleanRes, "1280x720") || strings.Contains(cleanRes, "720p") {
-			return "720p"
-		}
-		return fallbackResolution
-	}
-	return ""
+    if fallbackResolution != "" {
+        // Allocation-Free parsing using direct Boyer-Moore primitive substring scans
+        cleanRes := strings.ReplaceAll(strings.ToLower(fallbackResolution), " ", "")
+        if strings.Contains(cleanRes, "3840x2160") || strings.Contains(cleanRes, "2160p") {
+            return "4K"
+        }
+        if strings.Contains(cleanRes, "1920x1080") || strings.Contains(cleanRes, "1080p") {
+            return "1080p"
+        }
+        if strings.Contains(cleanRes, "1280x720") || strings.Contains(cleanRes, "720p") {
+            return "720p"
+        }
+        return fallbackResolution
+    }
+    return ""
 }
 
 // ---------------------------------------------------------------------------
@@ -243,29 +224,29 @@ func GetQuality(title string, fallbackResolution string) string {
 // ---------------------------------------------------------------------------
 
 func BuildSearchQuery(contentType string, meta MetaProviderResponse) string {
-	exclusions := " !sample !trailer !passwd !password !preview"
+    exclusions := " !sample !trailer !passwd !password !preview"
 
-	switch contentType {
-	case "movie":
-		if meta.Year > 0 {
-			return fmt.Sprintf("%s %d%s", meta.Name, meta.Year, exclusions)
-		}
-		return meta.Name + exclusions
+    switch contentType {
+    case "movie":
+        if meta.Year > 0 {
+            return fmt.Sprintf("%s %d%s", meta.Name, meta.Year, exclusions)
+        }
+        return meta.Name + exclusions
 
-	case "series":
-		if meta.Episode != "" && meta.Season != "" {
-			sNum, _ := strconv.Atoi(meta.Season)
-			eNum, _ := strconv.Atoi(meta.Episode)
+    case "series":
+        if meta.Episode != "" && meta.Season != "" {
+            sNum, _ := strconv.Atoi(meta.Season)
+            eNum, _ := strconv.Atoi(meta.Episode)
 
-			if sNum > 0 && eNum > 0 {
-				return fmt.Sprintf("%s S%02dE%02d%s", meta.Name, sNum, eNum, exclusions)
-			}
-		}
-		return meta.Name + exclusions
+            if sNum > 0 && eNum > 0 {
+                return fmt.Sprintf("%s S%02dE%02d%s", meta.Name, sNum, eNum, exclusions)
+            }
+        }
+        return meta.Name + exclusions
 
-	default:
-		return meta.Name + exclusions
-	}
+    default:
+        return meta.Name + exclusions
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -273,15 +254,15 @@ func BuildSearchQuery(contentType string, meta MetaProviderResponse) string {
 // ---------------------------------------------------------------------------
 
 func ExtractDigits(value string) *int {
-	if value == "" {
-		return nil
-	}
-	match := digitsOnlyRe.FindString(value)
-	if match == "" {
-		return nil
-	}
-	n, _ := strconv.Atoi(match)
-	return &n
+    if value == "" {
+        return nil
+    }
+    match := digitsOnlyRe.FindString(value)
+    if match == "" {
+        return nil
+    }
+    n, _ := strconv.Atoi(match)
+    return &n
 }
 
 func GetSize(file api.FileData) string          { return file.GetSize() }
@@ -290,54 +271,54 @@ func GetPostTitle(file api.FileData) string     { return file.GetPostTitle() }
 func GetFileExtension(file api.FileData) string { return file.GetExtension() }
 
 func CapitalizeFirstLetter(str string) string {
-	if str == "" {
-		return str
-	}
-	return strings.ToUpper(str[:1]) + str[1:]
+    if str == "" {
+        return str
+    }
+    return strings.ToUpper(str[:1]) + str[1:]
 }
 
 func IsAuthError(err error) bool {
-	if err == nil {
-		return false
-	}
-	s := strings.ToLower(err.Error())
-	return strings.Contains(s, "auth") || strings.Contains(s, "login") ||
-		strings.Contains(s, "username") || strings.Contains(s, "password") ||
-		strings.Contains(s, "credentials") || strings.Contains(s, "unauthorized") ||
-		strings.Contains(s, "forbidden")
+    if err == nil {
+        return false
+    }
+    s := strings.ToLower(err.Error())
+    return strings.Contains(s, "auth") || strings.Contains(s, "login") ||
+        strings.Contains(s, "username") || strings.Contains(s, "password") ||
+        strings.Contains(s, "credentials") || strings.Contains(s, "unauthorized") ||
+        strings.Contains(s, "forbidden")
 }
 
 type ErrorContext struct {
-	Resource string
-	ID       string
-	Type     string
+    Resource string
+    ID       string
+    Type     string
 }
 
 func LogError(logger shared.Logger, msg string, err error, ctx ErrorContext) {
-	logger.Error("Error: %s | resource=%s id=%s type=%s err=%v", msg, ctx.Resource, ctx.ID, ctx.Type, err)
+    logger.Error("Error: %s | resource=%s id=%s type=%s err=%v", msg, ctx.Resource, ctx.ID, ctx.Type, err)
 }
 
 func GetPublishDate(timestamp int64) string {
-	if timestamp == 0 {
-		return ""
-	}
-	uploadDate := time.Unix(timestamp, 0)
-	diff := time.Since(uploadDate)
-	days := int(diff.Hours() / 24)
-	if days < 1 {
-		days = 1
-	}
-	return fmt.Sprintf("📅 %dd", days)
+    if timestamp == 0 {
+        return ""
+    }
+    uploadDate := time.Unix(timestamp, 0)
+    diff := time.Since(uploadDate)
+    days := int(diff.Hours() / 24)
+    if days < 1 {
+        days = 1
+    }
+    return fmt.Sprintf("📅 %dd", days)
 }
 
 func CreateThumbnailUrl(res api.EasynewsSearchResponse, file api.FileData) string {
-	id := file.GetHash()
-	idChars := ""
-	if len(id) >= 3 {
-		idChars = id[:3]
-	}
-	thumbnailSlug := file.GetPostTitle()
-	return fmt.Sprintf("%s%s/pr-%s.jpg/th-%s.jpg", res.ThumbURL, idChars, id, thumbnailSlug)
+    id := file.GetHash()
+    idChars := ""
+    if len(id) >= 3 {
+        idChars = id[:3]
+    }
+    thumbnailSlug := file.GetPostTitle()
+    return fmt.Sprintf("%s%s/pr-%s.jpg/th-%s.jpg", res.ThumbURL, idChars, id, thumbnailSlug)
 }
 
 // ---------------------------------------------------------------------------
@@ -345,64 +326,64 @@ func CreateThumbnailUrl(res api.EasynewsSearchResponse, file api.FileData) strin
 // ---------------------------------------------------------------------------
 
 func QualityScoreFromLabel(quality string) int {
-	if quality == "" {
-		return 0
-	}
-	q := strings.ToUpper(quality)
-	if strings.Contains(q, "4K") || strings.Contains(q, "2160P") ||
-		strings.Contains(q, "UHD") || strings.Contains(q, "2160") ||
-		strings.Contains(q, "ULTRA HD") {
-		return 4
-	}
-	if strings.Contains(q, "1080P") || strings.Contains(q, "1080") {
-		return 3
-	}
-	if strings.Contains(q, "720P") || strings.Contains(q, "720") {
-		return 2
-	}
-	if strings.Contains(q, "480P") || strings.Contains(q, "480") || strings.Contains(q, "SD") {
-		return 1
-	}
-	return 0
+    if quality == "" {
+        return 0
+    }
+    q := strings.ToUpper(quality)
+    if strings.Contains(q, "4K") || strings.Contains(q, "2160P") ||
+        strings.Contains(q, "UHD") || strings.Contains(q, "2160") ||
+        strings.Contains(q, "ULTRA HD") {
+        return 4
+    }
+    if strings.Contains(q, "1080P") || strings.Contains(q, "1080") {
+        return 3
+    }
+    if strings.Contains(q, "720P") || strings.Contains(q, "720") {
+        return 2
+    }
+    if strings.Contains(q, "480P") || strings.Contains(q, "480") || strings.Contains(q, "SD") {
+        return 1
+    }
+    return 0
 }
 
 func ParseSizeForSort(size string) (unit string, value float64) {
-	if strings.Contains(size, "GB") {
-		v, _ := strconv.ParseFloat(floatValueRe.FindString(size), 64)
-		return "GB", v
-	}
-	if strings.Contains(size, "MB") {
-		v, _ := strconv.ParseFloat(floatValueRe.FindString(size), 64)
-		return "MB", v
-	}
-	return "", 0
+    if strings.Contains(size, "GB") {
+        v, _ := strconv.ParseFloat(floatValueRe.FindString(size), 64)
+        return "GB", v
+    }
+    if strings.Contains(size, "MB") {
+        v, _ := strconv.ParseFloat(floatValueRe.FindString(size), 64)
+        return "MB", v
+    }
+    return "", 0
 }
 
 func CompareSizeMeta(a, b *SortMeta) int {
-	if a == nil || b == nil {
-		return 0
-	}
-	if a.SizeUnit == "GB" && b.SizeUnit == "GB" {
-		if a.SizeValue > b.SizeValue {
-			return -1
-		} else if a.SizeValue < b.SizeValue {
-			return 1
-		}
-		return 0
-	}
-	if a.SizeUnit == "GB" && b.SizeUnit == "MB" {
-		return -1
-	}
-	if a.SizeUnit == "MB" && b.SizeUnit == "GB" {
-		return 1
-	}
-	if a.SizeUnit == "MB" && b.SizeUnit == "MB" {
-		if a.SizeValue > b.SizeValue {
-			return -1
-		} else if a.SizeValue < b.SizeValue {
-			return 1
-		}
-		return 0
-	}
-	return 0
+    if a == nil || b == nil {
+        return 0
+    }
+    if a.SizeUnit == "GB" && b.SizeUnit == "GB" {
+        if a.SizeValue > b.SizeValue {
+            return -1
+        } else if a.SizeValue < b.SizeValue {
+            return 1
+        }
+        return 0
+    }
+    if a.SizeUnit == "GB" && b.SizeUnit == "MB" {
+        return -1
+    }
+    if a.SizeUnit == "MB" && b.SizeUnit == "GB" {
+        return 1
+    }
+    if a.SizeUnit == "MB" && b.SizeUnit == "MB" {
+        if a.SizeValue > b.SizeValue {
+            return -1
+        } else if a.SizeValue < b.SizeValue {
+            return 1
+        }
+        return 0
+    }
+    return 0
 }
