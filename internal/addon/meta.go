@@ -104,16 +104,19 @@ func (c *BoundedCache[K, V]) Set(key K, value V) {
 
 // Cache Instances
 var (
-    imdbToTMDBIDCache    = NewBoundedCache[string, tmdbIDMapping](2000, 48*time.Hour)
-    tmdbAltTitlesCache   = NewBoundedCache[string, []string](2000, 24*time.Hour)
-    tmdbOrigTitleCache   = NewBoundedCache[string, string](2000, 48*time.Hour)
-    tmdbTransTitleCache  = NewBoundedCache[string, string](2000, 24*time.Hour)
-    metaResponseCache    = NewBoundedCache[string, MetaProviderResponse](2000, 24*time.Hour)
+    imdbToTMDBIDCache     = NewBoundedCache[string, tmdbIDMapping](2000, 48*time.Hour)
+    tmdbAltTitlesCache    = NewBoundedCache[string, []string](2000, 24*time.Hour)
+    tmdbOrigTitleCache    = NewBoundedCache[string, string](2000, 48*time.Hour)
+    tmdbTransTitleCache   = NewBoundedCache[string, string](2000, 24*time.Hour)
+    tmdbEpAirDateCache    = NewBoundedCache[string, string](2000, 24*time.Hour)
+    metaResponseCache     = NewBoundedCache[string, MetaProviderResponse](2000, 24*time.Hour)
 
-    tmdbIDSingleflight    singleflight.Group
-    altTitlesSingleflight singleflight.Group
-    origTitleSingleflight singleflight.Group
-    metaSingleflight      singleflight.Group
+    tmdbIDSingleflight     singleflight.Group
+    altTitlesSingleflight  singleflight.Group
+    origTitleSingleflight  singleflight.Group
+    transTitleSingleflight singleflight.Group // Bug 2 Fix: Added singleflight for translations
+    epAirDateSingleflight  singleflight.Group // Gap A Fix: Added singleflight for episode air dates
+    metaSingleflight       singleflight.Group
 )
 
 // ---------------------------------------------------------------------------
@@ -253,6 +256,68 @@ func resolveTMDBID(imdbID string) (int, bool, string, error) {
     }
     mapping := res.(tmdbIDMapping)
     return mapping.id, mapping.isMovie, mapping.originalLanguage, nil
+}
+
+// ---------------------------------------------------------------------------
+// TMDB Episode Air Date Resolution (Gap A Fix)
+// ---------------------------------------------------------------------------
+
+func getTMDBEpisodeAirDate(imdbID string, season, episode int) string {
+    if !useTMDB || season == 0 || episode == 0 {
+        return ""
+    }
+
+    cacheKey := fmt.Sprintf("%s:%d:%d", imdbID, season, episode)
+    if cached, ok := tmdbEpAirDateCache.Get(cacheKey); ok {
+        return cached
+    }
+
+    res, err, _ := epAirDateSingleflight.Do(cacheKey, func() (interface{}, error) {
+        if cached, ok := tmdbEpAirDateCache.Get(cacheKey); ok {
+            return cached, nil
+        }
+
+        tmdbID, isMovie, _, err := resolveTMDBID(imdbID)
+        if err != nil || tmdbID == 0 || isMovie {
+            return "", err
+        }
+
+        ctx, cancel := context.WithTimeout(context.Background(), metaFetchTimeout)
+        defer cancel()
+
+        u := fmt.Sprintf("https://api.themoviedb.org/3/tv/%d/season/%d/episode/%d?api_key=%s", tmdbID, season, episode, tmdbAPIKey)
+        req, _ := http.NewRequestWithContext(ctx, "GET", u, nil)
+        req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        req.Header.Set("Accept-Language", "en-US")
+
+        resp, err := fetchWithRetry(ctx, http.DefaultClient, req)
+        if err != nil || resp.StatusCode != 200 {
+            return "", err
+        }
+        defer func() {
+            _, _ = io.Copy(io.Discard, resp.Body)
+            resp.Body.Close()
+        }()
+
+        var data struct {
+            AirDate string `json:"air_date"`
+        }
+        if err := sonic.ConfigStd.NewDecoder(resp.Body).Decode(&data); err != nil {
+            return "", err
+        }
+
+        // Convert YYYY-MM-DD to YYYY.MM.DD for Easynews search
+        dateStr := strings.ReplaceAll(data.AirDate, "-", ".")
+        if dateStr != "" {
+            tmdbEpAirDateCache.Set(cacheKey, dateStr)
+        }
+        return dateStr, nil
+    })
+
+    if err != nil {
+        return ""
+    }
+    return res.(string)
 }
 
 // ---------------------------------------------------------------------------
@@ -460,7 +525,8 @@ func getTMDBAlternativeTitles(imdbID string, enableAltTitles bool, altTitleCount
                 }
             }
 
-            if isAllowed {
+            // Refinement 1 Fix: Re-added IsLatinString(t) to filter garbage non-Latin strings early
+            if isAllowed && IsLatinString(t) {
                 seen[t] = true
                 cleanList = append(cleanList, t)
             }
@@ -487,78 +553,89 @@ func getTMDBTranslatedTitle(imdbID, preferredLanguage string) (string, error) {
     }
 
     cacheKey := fmt.Sprintf("%s:%s", imdbID, preferredLanguage)
-    if cached, ok := tmdbTransTitleCache.Get(cacheKey); ok {
-        return cached, nil
-    }
 
-    tmdbLang := i18n.ConvertToTMDBLanguageCode(preferredLanguage)
+    // Bug 2 Fix: Wrapped API call inside singleflight
+    res, err, _ := transTitleSingleflight.Do(cacheKey, func() (interface{}, error) {
+        if cached, ok := tmdbTransTitleCache.Get(cacheKey); ok {
+            return cached, nil
+        }
 
-    tmdbID, isMovie, _, err := resolveTMDBID(imdbID)
-    if err != nil || tmdbID == 0 {
-        return "", err
-    }
+        tmdbLang := i18n.ConvertToTMDBLanguageCode(preferredLanguage)
+        tmdbID, isMovie, _, err := resolveTMDBID(imdbID)
+        if err != nil || tmdbID == 0 {
+            return "", err
+        }
 
-    metaLogger.Info("TMDB: Fetching translated title for IMDb ID '%s' in language '%s'...", imdbID, tmdbLang)
+        metaLogger.Info("TMDB: Fetching translated title for IMDb ID '%s' in language '%s'...", imdbID, tmdbLang)
 
-    var transURL string
-    if isMovie {
-        transURL = fmt.Sprintf("https://api.themoviedb.org/3/movie/%d/translations?api_key=%s", tmdbID, tmdbAPIKey)
-    } else {
-        transURL = fmt.Sprintf("https://api.themoviedb.org/3/tv/%d/translations?api_key=%s", tmdbID, tmdbAPIKey)
-    }
+        var transURL string
+        if isMovie {
+            transURL = fmt.Sprintf("https://api.themoviedb.org/3/movie/%d/translations?api_key=%s", tmdbID, tmdbAPIKey)
+        } else {
+            transURL = fmt.Sprintf("https://api.themoviedb.org/3/tv/%d/translations?api_key=%s", tmdbID, tmdbAPIKey)
+        }
 
-    ctx, cancel := context.WithTimeout(context.Background(), metaFetchTimeout)
-    defer cancel()
+        ctx, cancel := context.WithTimeout(context.Background(), metaFetchTimeout)
+        defer cancel()
 
-    req, _ := http.NewRequestWithContext(ctx, "GET", transURL, nil)
-    req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-    req.Header.Set("Accept-Language", tmdbLang)
+        req, _ := http.NewRequestWithContext(ctx, "GET", transURL, nil)
+        req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        req.Header.Set("Accept-Language", tmdbLang)
 
-    resp, err := fetchWithRetry(ctx, http.DefaultClient, req)
-    if err != nil {
-        metaLogger.Error("TMDB: Failed to fetch translation catalog: %v", err)
-        return "", err
-    }
-    defer func() {
-        _, _ = io.Copy(io.Discard, resp.Body)
-        resp.Body.Close()
-    }()
+        resp, err := fetchWithRetry(ctx, http.DefaultClient, req)
+        if err != nil {
+            metaLogger.Error("TMDB: Failed to fetch translation catalog: %v", err)
+            return "", err
+        }
+        defer func() {
+            _, _ = io.Copy(io.Discard, resp.Body)
+            resp.Body.Close()
+        }()
 
-    if resp.StatusCode != 200 {
-        metaLogger.Error("TMDB: Upstream translations returned status code: %d", resp.StatusCode)
-        return "", fmt.Errorf("TMDB translations error: %d", resp.StatusCode)
-    }
+        if resp.StatusCode != 200 {
+            metaLogger.Error("TMDB: Upstream translations returned status code: %d", resp.StatusCode)
+            return "", fmt.Errorf("TMDB translations error: %d", resp.StatusCode)
+        }
 
-    var transData struct {
-        Translations []struct {
-            ISO639_1 string `json:"iso_639_1"`
-            Data     struct {
-                Title string `json:"title"`
-                Name  string `json:"name"`
-            } `json:"data"`
-        } `json:"translations"`
-    }
-    if err := sonic.ConfigStd.NewDecoder(resp.Body).Decode(&transData); err != nil {
-        return "", err
-    }
+        var transData struct {
+            Translations []struct {
+                ISO639_1 string `json:"iso_639_1"`
+                Data     struct {
+                    Title string `json:"title"`
+                    Name  string `json:"name"`
+                } `json:"data"`
+            } `json:"translations"`
+        }
+        if err := sonic.ConfigStd.NewDecoder(resp.Body).Decode(&transData); err != nil {
+            return "", err
+        }
 
-    for _, t := range transData.Translations {
-        if t.ISO639_1 == tmdbLang {
-            if isMovie && t.Data.Title != "" {
-                metaLogger.Info("TMDB: Resolved translation title for '%s' in '%s': '%s'", imdbID, tmdbLang, t.Data.Title)
-                tmdbTransTitleCache.Set(cacheKey, t.Data.Title)
-                return t.Data.Title, nil
-            }
-            if !isMovie && t.Data.Name != "" {
-                metaLogger.Info("TMDB: Resolved translation name for '%s' in '%s': '%s'", imdbID, tmdbLang, t.Data.Name)
-                tmdbTransTitleCache.Set(cacheKey, t.Data.Name)
-                return t.Data.Name, nil
+        for _, t := range transData.Translations {
+            if t.ISO639_1 == tmdbLang {
+                if isMovie && t.Data.Title != "" {
+                    metaLogger.Info("TMDB: Resolved translation title for '%s' in '%s': '%s'", imdbID, tmdbLang, t.Data.Title)
+                    tmdbTransTitleCache.Set(cacheKey, t.Data.Title)
+                    return t.Data.Title, nil
+                }
+                if !isMovie && t.Data.Name != "" {
+                    metaLogger.Info("TMDB: Resolved translation name for '%s' in '%s': '%s'", imdbID, tmdbLang, t.Data.Name)
+                    tmdbTransTitleCache.Set(cacheKey, t.Data.Name)
+                    return t.Data.Name, nil
+                }
             }
         }
-    }
 
-    metaLogger.Info("TMDB: No translation found for IMDb ID '%s' in language '%s'", imdbID, tmdbLang)
-    return "", nil
+        metaLogger.Info("TMDB: No translation found for IMDb ID '%s' in language '%s'", imdbID, tmdbLang)
+        return "", nil
+    })
+
+    if err != nil {
+        return "", err
+    }
+    if res == nil {
+        return "", nil
+    }
+    return res.(string), nil
 }
 
 // ---------------------------------------------------------------------------
@@ -629,6 +706,7 @@ func imdbMetaProvider(id, preferredLanguage string, enableAltTitles bool, altTit
     alternatives := GetAlternativeTitles(originalName)
 
     var origLang string
+    var airDate string
     if useTMDB {
         altTitles, err := getTMDBAlternativeTitles(tt, enableAltTitles, altTitleCountry)
         if err == nil && len(altTitles) > 0 {
@@ -661,6 +739,13 @@ func imdbMetaProvider(id, preferredLanguage string, enableAltTitles bool, altTit
         }
 
         _, _, origLang, _ = resolveTMDBID(tt)
+
+        // Gap A Fix: Fetch episode air date for daily shows
+        sInt, _ := strconv.Atoi(season)
+        eInt, _ := strconv.Atoi(episode)
+        if sInt > 0 && eInt > 0 {
+            airDate = getTMDBEpisodeAirDate(tt, sInt, eInt)
+        }
     }
 
     // Inject Transliterations for non-Latin scripts
@@ -730,6 +815,7 @@ func imdbMetaProvider(id, preferredLanguage string, enableAltTitles bool, altTit
         Season:           season,
         Episode:          episode,
         OriginalLanguage: origLang,
+        EpisodeAirDate:   airDate,
     }, nil
 }
 
@@ -792,6 +878,7 @@ func cinemetaMetaProvider(id, contentType, preferredLanguage string, enableAltTi
     alternatives := GetAlternativeTitles(name)
 
     var origLang string
+    var airDate string
     if useTMDB {
         altTitles, err := getTMDBAlternativeTitles(tt, enableAltTitles, altTitleCountry)
         if err == nil && len(altTitles) > 0 {
@@ -824,6 +911,13 @@ func cinemetaMetaProvider(id, contentType, preferredLanguage string, enableAltTi
         }
 
         _, _, origLang, _ = resolveTMDBID(tt)
+
+        // Gap A Fix: Fetch episode air date for daily shows
+        sInt, _ := strconv.Atoi(season)
+        eInt, _ := strconv.Atoi(episode)
+        if sInt > 0 && eInt > 0 {
+            airDate = getTMDBEpisodeAirDate(tt, sInt, eInt)
+        }
     }
 
     // Inject Transliterations
@@ -880,6 +974,7 @@ func cinemetaMetaProvider(id, contentType, preferredLanguage string, enableAltTi
         Season:           season,
         Episode:          episode,
         OriginalLanguage: origLang,
+        EpisodeAirDate:   airDate,
     }, nil
 }
 
