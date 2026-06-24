@@ -32,7 +32,6 @@ type tmdbIDMapping struct {
     originalLanguage string
 }
 
-// H3 Fix: Removed lastAccess, simplified cache for performance and correctness
 type cacheEntry[V any] struct {
     value     V
     expiresAt int64
@@ -504,8 +503,6 @@ func getTMDBAlternativeTitles(imdbID string, enableAltTitles bool, altTitleCount
                 }
             }
 
-            // P2.5 Fix: Kept non-Latin check removed to allow original non-Latin titles for MATCHING.
-            // They are filtered out of SEARCH queries in addon.txt.
             if isAllowed {
                 seen[t] = true
                 cleanList = append(cleanList, t)
