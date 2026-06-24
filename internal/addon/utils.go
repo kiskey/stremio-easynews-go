@@ -24,7 +24,7 @@ var (
     veryShortDurRe    = regexp.MustCompile(`^[0-5]m`)
     separatorsRe      = regexp.MustCompile(`[\.\-_:\s]+`)
     bracketsRe        = regexp.MustCompile(`[\[\]\(\){}]`)
-    nonAlphanumericRe = regexp.MustCompile(`[^\w\s\x{00C0}-\x{00FF}]`)
+    nonAlphanumericRe = regexp.MustCompile(`[^\w\s\x{00C0}-\x{024F}\x{1E00}-\x{1EFF}]`) // Fixed: Allows Latin Extended-A/B and Vietnamese
     seasonEpisodeRe   = regexp.MustCompile(`(?i)(s\d+e\d+|\b\d+x\d+\b)`)
     yearPatternRe     = regexp.MustCompile(`\b(19\d{2}|20\d{2})\b`)
     fourDigitYearRe   = regexp.MustCompile(`\b(\d{4})\b`)
@@ -234,6 +234,10 @@ func BuildSearchQuery(contentType string, meta MetaProviderResponse) string {
         return meta.Name + exclusions
 
     case "series":
+        // Gap A Fix: Prioritize daily show air dates if available
+        if meta.EpisodeAirDate != "" {
+            return fmt.Sprintf("%s %s%s", meta.Name, meta.EpisodeAirDate, exclusions)
+        }
         if meta.Episode != "" && meta.Season != "" {
             sNum, _ := strconv.Atoi(meta.Season)
             eNum, _ := strconv.Atoi(meta.Episode)
