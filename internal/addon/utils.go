@@ -31,6 +31,7 @@ var (
     digitsOnlyRe      = regexp.MustCompile(`\d+`)
     floatValueRe      = regexp.MustCompile(`[\d.]+`)
 
+    // Compiled with case-insensitive (?i) flags to prevent strings.ToLower allocations
     fallbackQualityPatterns = []struct {
         re      *regexp.Regexp
         quality string
@@ -46,7 +47,19 @@ var (
         {regexp.MustCompile(`(?i)\bbluray\b`), "BluRay"},
         {regexp.MustCompile(`(?i)\bweb-?dl\b`), "WEB-DL"},
     }
+
+    // Performance Fix: Strip Solr special characters that cause Easynews to hang
+    solrSpecialCharsRe = regexp.MustCompile(`[+\-!(){}\[\]^"~*?:\\]`)
 )
+
+// SanitizeSolrString removes special characters that break the Easynews Solr search engine
+func SanitizeSolrString(s string) string {
+    return solrSpecialCharsRe.ReplaceAllString(s, " ")
+}
+
+// ---------------------------------------------------------------------------
+// Bad Video Logic
+// ---------------------------------------------------------------------------
 
 func IsBadVideo(file api.FileData) bool {
     duration := file.GetDuration()
@@ -72,6 +85,10 @@ func IsBadVideo(file api.FileData) bool {
     return false
 }
 
+// ---------------------------------------------------------------------------
+// Title Sanitization
+// ---------------------------------------------------------------------------
+
 var titleReplacer = strings.NewReplacer(
     "ä", "ae", "ö", "oe", "ü", "ue", "ß", "ss",
     "Ä", "Ae", "Ö", "Oe", "Ü", "Ue", "&", "and",
@@ -87,6 +104,10 @@ func SanitizeTitle(title string) string {
     result = strings.TrimSpace(result)
     return result
 }
+
+// ---------------------------------------------------------------------------
+// High-Precision Title Matching Engine (Unifies PN-SILEC and Homoglyphs)
+// ---------------------------------------------------------------------------
 
 func MatchesTitle(title, query string, strict bool) bool {
     if !strict {
@@ -115,11 +136,19 @@ func MatchesTitle(title, query string, strict bool) bool {
     return similarity >= 0.80
 }
 
+// ---------------------------------------------------------------------------
+// Missing Base URL Error Pattern
+// ---------------------------------------------------------------------------
+
 type MissingBaseUrlError struct {
     msg string
 }
 
 func (e *MissingBaseUrlError) Error() string { return e.msg }
+
+// ---------------------------------------------------------------------------
+// URL and Path Construction Helpers
+// ---------------------------------------------------------------------------
 
 func CreateStreamUrl(downURL string, dlFarm string, dlPort int, username, password, filePath, baseUrl string) (string, error) {
     effectiveBaseUrl := baseUrl
@@ -159,6 +188,10 @@ func CreateStreamPath(file api.FileData) string {
     return postHash + ext + "/" + postTitle + ext
 }
 
+// ---------------------------------------------------------------------------
+// Quality Processing
+// ---------------------------------------------------------------------------
+
 func GetQuality(title string, fallbackResolution string) string {
     parsed := RobustParseInfo(title, 0)
     if parsed != nil && parsed.Quality != "" && parsed.Quality != "sd" {
@@ -190,54 +223,60 @@ func GetQuality(title string, fallbackResolution string) string {
     return ""
 }
 
+// ---------------------------------------------------------------------------
+// Clean, Standard Solr Query Builders
+// ---------------------------------------------------------------------------
+
 func BuildSearchQuery(contentType string, meta MetaProviderResponse) string {
     exclusions := " !sample !trailer !passwd !password !preview"
+    safeName := SanitizeSolrString(meta.Name)
 
     switch contentType {
     case "movie":
         if meta.Year > 0 {
-            return fmt.Sprintf("%s %d%s", meta.Name, meta.Year, exclusions)
+            return fmt.Sprintf("%s %d%s", safeName, meta.Year, exclusions)
         }
-        return meta.Name + exclusions
+        return safeName + exclusions
 
     case "series":
         if meta.EpisodeAirDate != "" {
-            return fmt.Sprintf("%s %s%s", meta.Name, meta.EpisodeAirDate, exclusions)
+            return fmt.Sprintf("%s %s%s", safeName, meta.EpisodeAirDate, exclusions)
         }
         if meta.Episode != "" && meta.Season != "" {
             sNum, _ := strconv.Atoi(meta.Season)
             eNum, _ := strconv.Atoi(meta.Episode)
 
             if sNum > 0 && eNum > 0 {
-                return fmt.Sprintf("%s S%02dE%02d%s", meta.Name, sNum, eNum, exclusions)
+                return fmt.Sprintf("%s S%02dE%02d%s", safeName, sNum, eNum, exclusions)
             }
         }
-        return meta.Name + exclusions
+        return safeName + exclusions
 
     default:
-        return meta.Name + exclusions
+        return safeName + exclusions
     }
 }
 
 func BuildSearchQueryVariants(contentType string, meta MetaProviderResponse) []string {
     var variants []string
     exclusions := " !sample !trailer !passwd !password !preview"
+    safeName := SanitizeSolrString(meta.Name)
 
     switch contentType {
     case "movie":
         if meta.Year > 0 {
             variants = append(variants,
-                fmt.Sprintf("%s %d%s", meta.Name, meta.Year, exclusions),
-                fmt.Sprintf("%s (%d)%s", meta.Name, meta.Year, exclusions),
+                fmt.Sprintf("%s %d%s", safeName, meta.Year, exclusions),
+                fmt.Sprintf("%s (%d)%s", safeName, meta.Year, exclusions),
             )
         }
-        variants = append(variants, meta.Name+exclusions)
+        variants = append(variants, safeName+exclusions)
     case "series":
         if meta.EpisodeAirDate != "" {
-            variants = append(variants, fmt.Sprintf("%s %s%s", meta.Name, meta.EpisodeAirDate, exclusions))
+            variants = append(variants, fmt.Sprintf("%s %s%s", safeName, meta.EpisodeAirDate, exclusions))
             dashDate := strings.ReplaceAll(meta.EpisodeAirDate, ".", "-")
             if dashDate != meta.EpisodeAirDate {
-                variants = append(variants, fmt.Sprintf("%s %s%s", meta.Name, dashDate, exclusions))
+                variants = append(variants, fmt.Sprintf("%s %s%s", safeName, dashDate, exclusions))
             }
         }
         if meta.Season != "" && meta.Episode != "" {
@@ -245,19 +284,23 @@ func BuildSearchQueryVariants(contentType string, meta MetaProviderResponse) []s
             e, _ := strconv.Atoi(meta.Episode)
             if s > 0 && e > 0 {
                 variants = append(variants,
-                    fmt.Sprintf("%s S%02dE%02d%s", meta.Name, s, e, exclusions),
-                    fmt.Sprintf("%s %dx%02d%s", meta.Name, s, e, exclusions),
+                    fmt.Sprintf("%s S%02dE%02d%s", safeName, s, e, exclusions),
+                    fmt.Sprintf("%s %dx%02d%s", safeName, s, e, exclusions),
                 )
             }
         }
         if len(variants) == 0 {
-            variants = append(variants, meta.Name+exclusions)
+            variants = append(variants, safeName+exclusions)
         }
     default:
-        variants = append(variants, meta.Name+exclusions)
+        variants = append(variants, safeName+exclusions)
     }
     return variants
 }
+
+// ---------------------------------------------------------------------------
+// Simple String Helpers
+// ---------------------------------------------------------------------------
 
 func ExtractDigits(value string) *int {
     if value == "" {
@@ -326,6 +369,10 @@ func CreateThumbnailUrl(res api.EasynewsSearchResponse, file api.FileData) strin
     thumbnailSlug := file.GetPostTitle()
     return fmt.Sprintf("%s%s/pr-%s.jpg/th-%s.jpg", res.ThumbURL, idChars, id, thumbnailSlug)
 }
+
+// ---------------------------------------------------------------------------
+// Sorting Preparation Helpers
+// ---------------------------------------------------------------------------
 
 func QualityScoreFromLabel(quality string) int {
     if quality == "" {
