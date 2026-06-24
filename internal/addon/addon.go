@@ -228,7 +228,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
         return StreamHandlerResult{Streams: []Stream{}}, nil
     }
 
-    cacheKey := fmt.Sprintf("%s:v4:user=%s:strict=%s:lang=%s:sort=%s:qualities=%s:maxPerQuality=%s:maxSize=%s:enableAlt=%s:altCountry=%s",
+    cacheKey := fmt.Sprintf("%s:v5:user=%s:strict=%s:lang=%s:sort=%s:qualities=%s:maxPerQuality=%s:maxSize=%s:enableAlt=%s:altCountry=%s",
         id,
         config.Username,
         config.StrictTitleMatching,
@@ -425,6 +425,28 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
         }
     }
 
+    // Gap B Fix: Parse target season/episode early for fallback searches
+    targetSeason, _ := strconv.Atoi(meta.Season)
+    targetEpisode, _ := strconv.Atoi(meta.Episode)
+
+    // Phase 3 Fallback: Anime Absolute Numbering
+    if contentType == "series" && totalFoundResults < 5 && targetEpisode > 0 {
+        addonLogger.Info("Low results (%d) for series '%s'. Running absolute episode fallback search...", totalFoundResults, meta.Name)
+        var absFallbackQueries []string
+        for _, titleVariant := range allTitles {
+            if strings.TrimSpace(titleVariant) == "" {
+                continue
+            }
+            absFallbackQueries = append(absFallbackQueries, fmt.Sprintf("%s %d !sample !trailer !passwd !password !preview", titleVariant, targetEpisode))
+        }
+        if len(absFallbackQueries) > 0 {
+            if err := runSearchPhase(absFallbackQueries); err != nil {
+                addonLogger.Error("Easynews API search (absolute fallback) failed: %v", err)
+            }
+        }
+    }
+
+    // Phase 4 Fallback: If results are extremely low for multi-word series, run title-only search
     if contentType == "series" && totalFoundResults < 5 && isMultiWord(meta.Name) {
         addonLogger.Info("Low results (%d) for multi-word series '%s'. Running title-only fallback search...", totalFoundResults, meta.Name)
         var titleFallbackQueries []string
@@ -498,8 +520,6 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
                     continue
                 }
 
-                targetSeason, _ := strconv.Atoi(meta.Season)
-                targetEpisode, _ := strconv.Atoi(meta.Episode)
                 if targetSeason > 0 && targetEpisode > 0 {
                     isPack, _, _, hasRange := ParsePackOrRange(title, targetEpisode)
 
