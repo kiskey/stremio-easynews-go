@@ -196,8 +196,8 @@ func GetQuality(title string, fallbackResolution string) string {
 
 // BuildOptimizedGroupedQueries dynamically groups single-word titles using pipes
 // and outputs separate queries for multi-word titles to prevent space-AND conflicts.
-// Bug 2 Fix: Added includeDates flag to adaptively route date queries only when needed.
-func BuildOptimizedGroupedQueries(contentType string, meta MetaProviderResponse, allTitles []string, includeDates bool) []string {
+// Bug 2 Fix: Added formatType flag to adaptively route formats independently.
+func BuildOptimizedGroupedQueries(contentType string, meta MetaProviderResponse, allTitles []string, formatType string) []string {
     var safeTitles []string
 
     for _, t := range allTitles {
@@ -216,19 +216,25 @@ func BuildOptimizedGroupedQueries(contentType string, meta MetaProviderResponse,
     exclusions := " !sample !trailer !passwd !password !preview"
 
     if contentType == "movie" {
-        if meta.Year > 0 {
-            formats = append(formats, strconv.Itoa(meta.Year))
+        if formatType == "standard" || formatType == "all" {
+            if meta.Year > 0 {
+                formats = append(formats, strconv.Itoa(meta.Year))
+            }
         }
     } else if contentType == "series" {
         if meta.Season != "" && meta.Episode != "" {
             s, _ := strconv.Atoi(meta.Season)
             e, _ := strconv.Atoi(meta.Episode)
             if s > 0 && e > 0 {
-                formats = append(formats, fmt.Sprintf("S%02dE%02d", s, e))
-                formats = append(formats, fmt.Sprintf("%dx%02d", s, e))
+                if formatType == "standard" || formatType == "all" {
+                    formats = append(formats, fmt.Sprintf("S%02dE%02d", s, e))
+                }
+                if formatType == "legacy" || formatType == "all" {
+                    formats = append(formats, fmt.Sprintf("%dx%02d", s, e))
+                }
             }
         }
-        if includeDates && meta.EpisodeAirDate != "" {
+        if (formatType == "date" || formatType == "all") && meta.EpisodeAirDate != "" {
             formats = append(formats, meta.EpisodeAirDate)
             dashDate := strings.ReplaceAll(meta.EpisodeAirDate, ".", "-")
             if dashDate != meta.EpisodeAirDate {
@@ -246,6 +252,7 @@ func BuildOptimizedGroupedQueries(contentType string, meta MetaProviderResponse,
                 queries = append(queries, fmt.Sprintf("%s %s%s", title, f, exclusions))
             }
         } else {
+            // If no formats apply (e.g., movie without year, or series without S/E), just search the title
             queries = append(queries, title+exclusions)
         }
     }
