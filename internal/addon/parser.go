@@ -345,6 +345,26 @@ func SanitizeName(name string) string {
 
 var robustParseCache = NewBoundedCache[string, *ParseResult](10000, 24*time.Hour)
 
+// Precompiled regex matching leading season/episode patterns (e.g., S01E01, [S01E01], 2x03, [2x03])
+var leadingEpPatternRe = regexp.MustCompile(`(?i)^[\s\-_.]*\[?(S\d+E\d+|\b\d+x\d+\b)\]?[\s\-_.]*`)
+
+// ShiftLeadingEpisodePattern transposes any leading episode pattern to the end of the string
+// so that releasetitleparser can cleanly extract the series title.
+func ShiftLeadingEpisodePattern(s string) string {
+    if match := leadingEpPatternRe.FindStringSubmatch(s); len(match) > 1 {
+        matchedStr := match[0]
+        epPattern := match[1]
+
+        // Strip the pattern from the front
+        stripped := s[len(matchedStr):]
+        stripped = strings.TrimSpace(stripped)
+
+        // Append the episode pattern to the end
+        return fmt.Sprintf("%s %s", stripped, epPattern)
+    }
+    return s
+}
+
 func RobustParseInfo(title string, fallbackSeason int) *ParseResult {
     // Cache Key Fix: Include fallbackSeason to prevent silent cache collisions
     cacheKey := fmt.Sprintf("%s:%d", title, fallbackSeason)
@@ -352,7 +372,9 @@ func RobustParseInfo(title string, fallbackSeason int) *ParseResult {
         return cached
     }
 
-    clean := SanitizeName(title)
+    // Transpose leading patterns first (e.g. S01E01 Severance -> Severance S01E01)
+    preprocessedTitle := ShiftLeadingEpisodePattern(title)
+    clean := SanitizeName(preprocessedTitle)
 
     var result *ParseResult
 
@@ -360,7 +382,7 @@ func RobustParseInfo(title string, fallbackSeason int) *ParseResult {
         dateStr := fmt.Sprintf("%s-%s-%s", m[1], m[2], m[3])
         idx := strings.Index(clean, m[0])
         titleStr := strings.Trim(strings.TrimSpace(clean[:idx]), " .-_")
-        
+
         result = &ParseResult{
             Title:    titleStr,
             Season:   fallbackSeason,
@@ -539,7 +561,7 @@ func matchRange(path string, targetEpisode int) bool {
 
             start, err1 := strconv.Atoi(startStr)
             end, err2 := strconv.Atoi(endStr)
-            if err1 == nil && err2 == nil {
+            if err1 == nil && err2 == nil { // Fix: check for nil errors properly
                 if start <= end && targetEpisode >= start && targetEpisode <= end {
                     return true
                 }
