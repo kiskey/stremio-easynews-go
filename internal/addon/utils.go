@@ -43,7 +43,7 @@ var (
         {regexp.MustCompile(`(?i)\bweb-?dl\b`), "WEB-DL"},
     }
 
-    solrSpecialCharsRe = regexp.MustCompile(`[+\-!(){}\[\]^"~*?:\\]`)
+    solrSpecialCharsRe = regexp.MustCompile(`[+\-!(){}\[\]^"~*?:\\|]`)
 )
 
 func SanitizeSolrString(s string) string {
@@ -194,11 +194,11 @@ func GetQuality(title string, fallbackResolution string) string {
     return ""
 }
 
-// BuildOptimizedGroupedQueries dynamically groups single-word titles using pipes
-// and distributes multi-word titles over each format to prevent space-AND conflicts.
+// BuildOptimizedGroupedQueries completely eliminates piped format groups (|) to prevent 
+// Solr operator precedence splitting. It distributes every title-format combination 
+// into separate space-AND queries.
 func BuildOptimizedGroupedQueries(contentType string, meta MetaProviderResponse, allTitles []string) []string {
-    var singleWords []string
-    var multiWords []string
+    var safeTitles []string
 
     for _, t := range allTitles {
         trimmed := strings.TrimSpace(t)
@@ -209,12 +209,7 @@ func BuildOptimizedGroupedQueries(contentType string, meta MetaProviderResponse,
         if safeTitle == "" {
             continue
         }
-
-        if strings.Contains(safeTitle, " ") {
-            multiWords = append(multiWords, safeTitle)
-        } else {
-            singleWords = append(singleWords, safeTitle)
-        }
+        safeTitles = append(safeTitles, safeTitle)
     }
 
     var formats []string
@@ -244,25 +239,14 @@ func BuildOptimizedGroupedQueries(contentType string, meta MetaProviderResponse,
 
     var queries []string
 
-    // 1. Single-word Group: Group all single-word alternative titles with pipes
-    if len(singleWords) > 0 {
-        singleGroup := strings.Join(singleWords, "|")
-        if len(formats) > 0 {
-            formatGroup := strings.Join(formats, "|")
-            queries = append(queries, fmt.Sprintf("%s %s%s", singleGroup, formatGroup, exclusions))
-        } else {
-            queries = append(queries, singleGroup+exclusions)
-        }
-    }
-
-    // 2. Multi-word Phrases: Distribute over each format to prevent Solr precedence splitting
-    for _, mw := range multiWords {
+    // Distribute every title over every format to ensure strict AND logic
+    for _, title := range safeTitles {
         if len(formats) > 0 {
             for _, f := range formats {
-                queries = append(queries, fmt.Sprintf("%s %s%s", mw, f, exclusions))
+                queries = append(queries, fmt.Sprintf("%s %s%s", title, f, exclusions))
             }
         } else {
-            queries = append(queries, mw+exclusions)
+            queries = append(queries, title+exclusions)
         }
     }
 
