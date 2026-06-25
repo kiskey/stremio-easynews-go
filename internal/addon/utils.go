@@ -194,11 +194,12 @@ func GetQuality(title string, fallbackResolution string) string {
     return ""
 }
 
-// BuildOptimizedGroupedQueries dynamically groups single-word titles using pipes
-// and outputs separate queries for multi-word titles to prevent space-AND conflicts.
-// Bug 2 Fix: Added formatType flag to adaptively route formats independently.
+// BuildOptimizedGroupedQueries groups single-word titles into single piped queries
+// while generating clean space-AND queries for multi-word titles to prevent
+// Solr operator precedence splitting without parentheses.
 func BuildOptimizedGroupedQueries(contentType string, meta MetaProviderResponse, allTitles []string, formatType string) []string {
-    var safeTitles []string
+    var singleWords []string
+    var multiWords []string
 
     for _, t := range allTitles {
         trimmed := strings.TrimSpace(t)
@@ -209,32 +210,35 @@ func BuildOptimizedGroupedQueries(contentType string, meta MetaProviderResponse,
         if safeTitle == "" {
             continue
         }
-        safeTitles = append(safeTitles, safeTitle)
+
+        if strings.Contains(safeTitle, " ") {
+            multiWords = append(multiWords, safeTitle)
+        } else {
+            singleWords = append(singleWords, safeTitle)
+        }
     }
 
     var formats []string
     exclusions := " !sample !trailer !passwd !password !preview"
 
     if contentType == "movie" {
-        if formatType == "standard" || formatType == "all" {
-            if meta.Year > 0 {
-                formats = append(formats, strconv.Itoa(meta.Year))
-            }
+        if meta.Year > 0 {
+            formats = append(formats, strconv.Itoa(meta.Year))
         }
     } else if contentType == "series" {
         if meta.Season != "" && meta.Episode != "" {
             s, _ := strconv.Atoi(meta.Season)
             e, _ := strconv.Atoi(meta.Episode)
             if s > 0 && e > 0 {
-                if formatType == "standard" || formatType == "all" {
+                switch formatType {
+                case "standard":
                     formats = append(formats, fmt.Sprintf("S%02dE%02d", s, e))
-                }
-                if formatType == "legacy" || formatType == "all" {
+                case "legacy":
                     formats = append(formats, fmt.Sprintf("%dx%02d", s, e))
                 }
             }
         }
-        if (formatType == "date" || formatType == "all") && meta.EpisodeAirDate != "" {
+        if formatType == "date" && meta.EpisodeAirDate != "" {
             formats = append(formats, meta.EpisodeAirDate)
             dashDate := strings.ReplaceAll(meta.EpisodeAirDate, ".", "-")
             if dashDate != meta.EpisodeAirDate {
@@ -245,15 +249,25 @@ func BuildOptimizedGroupedQueries(contentType string, meta MetaProviderResponse,
 
     var queries []string
 
-    // Distribute every title over every format to ensure strict AND logic
-    for _, title := range safeTitles {
+    // 1. Single-word Group: Group single-word alternative titles with piped formats (Safe)
+    if len(singleWords) > 0 {
+        singleGroup := strings.Join(singleWords, "|")
+        if len(formats) > 0 {
+            formatGroup := strings.Join(formats, "|")
+            queries = append(queries, fmt.Sprintf("%s %s%s", singleGroup, formatGroup, exclusions))
+        } else {
+            queries = append(queries, singleGroup+exclusions)
+        }
+    }
+
+    // 2. Multi-word Phrases: Generate a SEPARATE space-AND query for EACH format to prevent precedence split
+    for _, mw := range multiWords {
         if len(formats) > 0 {
             for _, f := range formats {
-                queries = append(queries, fmt.Sprintf("%s %s%s", title, f, exclusions))
+                queries = append(queries, fmt.Sprintf("%s %s%s", mw, f, exclusions))
             }
         } else {
-            // If no formats apply (e.g., movie without year, or series without S/E), just search the title
-            queries = append(queries, title+exclusions)
+            queries = append(queries, mw+exclusions)
         }
     }
 
