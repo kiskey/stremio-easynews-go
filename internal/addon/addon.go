@@ -263,7 +263,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
         config.MaxResultsPerQuality,
         config.MaxFileSize,
         config.EnableAltTitles,
-        config.AltTitleCountry,
+        config.AltCountry,
     )
 
     if cached, ok := getFromRequestCache(cacheKey); ok {
@@ -1180,7 +1180,7 @@ func MapStream(duration, size, fullResolution, title, fileExtension string, vide
 
     bh := &BehaviorHints{
         NotWebReady: true,
-        Filename:    title + fileExtension,
+        Filename:    SanitizeFilenameForStremio(title + fileExtension),
         BingeGroup:  bingeGroup,
     }
     if videoSize > 0 {
@@ -1210,4 +1210,26 @@ func contains(slice []string, item string) bool {
         }
     }
     return false
+}
+
+func SanitizeFilenameForStremio(filename string) string {
+    // Replace spaces and toxic brackets/symbols with periods
+    r := strings.NewReplacer(
+        " ", ".",
+        "(", "",
+        ")", "",
+        "[", "",
+        "]", "",
+        ":", ".",
+        "-", ".",
+        "_", ".",
+    )
+    sanitized := r.Replace(filename)
+    
+    // De-duplicate double periods (e.g. ".." -> ".")
+    for strings.Contains(sanitized, "..") {
+        sanitized = strings.ReplaceAll(sanitized, "..", ".")
+    }
+    
+    return strings.Trim(sanitized, ".")
 }
