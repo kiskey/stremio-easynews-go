@@ -839,17 +839,17 @@ func imdbMetaProvider(id, preferredLanguage string, enableAltTitles bool, altTit
     }
 
     return MetaProviderResponse{
-        Name:               originalName,
-        OriginalName:       originalName,
-        AlternativeNames:   alternatives,
-        Year:               item.Y,
-        Season:             season,
-        Episode:            episode,
-        OriginalLanguage:   origLang,
-        EpisodeAirDate:     airDate,
-        IsAnimation:        isAnimation,
-        OriginCountries:    originCountries,
-        SeasonEpisodeCount: seasonEpisodeCount,
+        Name:                originalName,
+        OriginalName:        originalName,
+        AlternativeNames:    alternatives,
+        Year:                item.Y,
+        Season:              season,
+        Episode:             episode,
+        OriginalLanguage:    origLang,
+        EpisodeAirDate:      airDate,
+        IsAnimation:         isAnimation,
+        OriginCountries:     originCountries,
+        SeasonEpisodeCount:  seasonEpisodeCount,
         SeasonEpisodeCounts: counts,
     }, nil
 }
