@@ -43,11 +43,9 @@ var (
         {regexp.MustCompile(`(?i)\bweb-?dl\b`), "WEB-DL"},
     }
 
-    // Strip Solr special characters that break the Easynews query parser
     solrSpecialCharsRe = regexp.MustCompile(`[+\-!(){}\[\]^"~*?:\\]`)
 )
 
-// SanitizeSolrString removes special characters that break the Easynews Solr search engine
 func SanitizeSolrString(s string) string {
     s = solrSpecialCharsRe.ReplaceAllString(s, " ")
     s = strings.Join(strings.Fields(s), " ")
@@ -207,13 +205,11 @@ func BuildOptimizedGroupedQueries(contentType string, meta MetaProviderResponse,
         if trimmed == "" || !IsLatinString(trimmed) {
             continue
         }
-        // Apply Solr special character escaping
         safeTitle := SanitizeSolrString(trimmed)
         if safeTitle == "" {
             continue
         }
 
-        // If the title contains spaces after sanitization, treat it as a multi-word phrase
         if strings.Contains(safeTitle, " ") {
             multiWords = append(multiWords, safeTitle)
         } else {
@@ -221,7 +217,6 @@ func BuildOptimizedGroupedQueries(contentType string, meta MetaProviderResponse,
         }
     }
 
-    // Build the high-density format-OR group
     var formatGroup string
     exclusions := " !sample !trailer !passwd !password !preview"
 
@@ -247,14 +242,12 @@ func BuildOptimizedGroupedQueries(contentType string, meta MetaProviderResponse,
             }
         }
         if len(formats) > 0 {
-            // Join all patterns with pipes to make a high-recall format group
             formatGroup = strings.Join(formats, "|")
         }
     }
 
     var queries []string
 
-    // 1. Single-word Group: Group all single-word alternative titles with pipes
     if len(singleWords) > 0 {
         singleGroup := strings.Join(singleWords, "|")
         if formatGroup != "" {
@@ -264,7 +257,6 @@ func BuildOptimizedGroupedQueries(contentType string, meta MetaProviderResponse,
         }
     }
 
-    // 2. Multi-word Phrases: Output individual queries for each multi-word title
     for _, mw := range multiWords {
         if formatGroup != "" {
             queries = append(queries, fmt.Sprintf("%s %s%s", mw, formatGroup, exclusions))
