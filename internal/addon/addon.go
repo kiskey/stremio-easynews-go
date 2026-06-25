@@ -221,7 +221,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
         return StreamHandlerResult{Streams: []Stream{}}, nil
     }
 
-    cacheKey := fmt.Sprintf("%s:v24:user=%s:strict=%s:lang=%s:sort=%s:qualities=%s:maxPerQuality=%s:maxSize=%s:enableAlt=%s:altCountry=%s",
+    cacheKey := fmt.Sprintf("%s:v25:user=%s:strict=%s:lang=%s:sort=%s:qualities=%s:maxPerQuality=%s:maxSize=%s:enableAlt=%s:altCountry=%s",
         id,
         config.Username,
         config.StrictTitleMatching,
