@@ -57,8 +57,9 @@ func isNewerShowDisqualified(fileTs int64, premiereYear int) bool {
 // ClassifyTargetPrior calculates the log-prior LLR of the requested show from TMDB Metadata
 func ClassifyTargetPrior(meta MetaProviderResponse) float64 {
     var score float64 = 0.0
+    lang := strings.ToLower(meta.OriginalLanguage)
 
-    switch strings.ToLower(meta.OriginalLanguage) {
+    switch lang {
     case "ja":
         score += 6.0
     case "en":
@@ -73,7 +74,8 @@ func ClassifyTargetPrior(meta MetaProviderResponse) float64 {
         score += 10.0
     }
 
-    if meta.SeasonEpisodeCount > 30 {
+    // continuous-season anime prior restriction
+    if (meta.IsAnimation || lang == "ja" || lang == "zh" || lang == "ko") && meta.SeasonEpisodeCount > 30 {
         score += 8.0
     } else if meta.SeasonEpisodeCount >= 8 && meta.SeasonEpisodeCount <= 15 {
         score -= 2.0
