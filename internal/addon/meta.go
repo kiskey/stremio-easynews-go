@@ -95,17 +95,28 @@ func (c *BoundedCache[K, V]) Set(key K, value V) {
     }
 }
 
+type tmdbDetails struct {
+    OriginalTitle string
+    OriginCountry []string
+    IsAnimation   bool
+}
+
+type tmdbSeasonDetails struct {
+    AirDates     map[int]string
+    EpisodeCount int
+}
+
 var (
     imdbToTMDBIDCache      = NewBoundedCache[string, tmdbIDMapping](2000, 48*time.Hour)
     tmdbAltTitlesCache     = NewBoundedCache[string, []string](2000, 24*time.Hour)
-    tmdbOrigTitleCache     = NewBoundedCache[string, string](2000, 48*time.Hour)
+    tmdbDetailsCache       = NewBoundedCache[string, tmdbDetails](2000, 48*time.Hour)
     tmdbTransTitleCache    = NewBoundedCache[string, string](2000, 24*time.Hour)
-    tmdbSeasonAirDateCache = NewBoundedCache[string, map[int]string](2000, 24*time.Hour)
+    tmdbSeasonAirDateCache = NewBoundedCache[string, tmdbSeasonDetails](2000, 24*time.Hour)
     metaResponseCache      = NewBoundedCache[string, MetaProviderResponse](2000, 24*time.Hour)
 
     tmdbIDSingleflight        singleflight.Group
     altTitlesSingleflight     singleflight.Group
-    origTitleSingleflight     singleflight.Group
+    tmdbDetailsSingleflight   singleflight.Group
     transTitleSingleflight    singleflight.Group
     seasonAirDateSingleflight singleflight.Group
     metaSingleflight          singleflight.Group
@@ -241,9 +252,9 @@ func resolveTMDBID(imdbID string) (int, bool, string, error) {
     return mapping.id, mapping.isMovie, mapping.originalLanguage, nil
 }
 
-func getTMDBSeasonAirDates(imdbID string, season int) map[int]string {
+func getTMDBSeasonDetails(imdbID string, season int) tmdbSeasonDetails {
     if !useTMDB || season == 0 {
-        return nil
+        return tmdbSeasonDetails{AirDates: make(map[int]string)}
     }
 
     cacheKey := fmt.Sprintf("%s:%d", imdbID, season)
@@ -258,7 +269,7 @@ func getTMDBSeasonAirDates(imdbID string, season int) map[int]string {
 
         tmdbID, isMovie, _, err := resolveTMDBID(imdbID)
         if err != nil || tmdbID == 0 || isMovie {
-            return map[int]string{}, err
+            return tmdbSeasonDetails{AirDates: make(map[int]string)}, err
         }
 
         ctx, cancel := context.WithTimeout(context.Background(), metaFetchTimeout)
@@ -271,7 +282,7 @@ func getTMDBSeasonAirDates(imdbID string, season int) map[int]string {
 
         resp, err := fetchWithRetry(ctx, http.DefaultClient, req)
         if err != nil || resp.StatusCode != 200 {
-            return map[int]string{}, err
+            return tmdbSeasonDetails{AirDates: make(map[int]string)}, err
         }
         defer func() {
             _, _ = io.Copy(io.Discard, resp.Body)
@@ -285,7 +296,7 @@ func getTMDBSeasonAirDates(imdbID string, season int) map[int]string {
             } `json:"episodes"`
         }
         if err := sonic.ConfigStd.NewDecoder(resp.Body).Decode(&data); err != nil {
-            return map[int]string{}, err
+            return tmdbSeasonDetails{AirDates: make(map[int]string)}, err
         }
 
         airDates := make(map[int]string)
@@ -296,33 +307,42 @@ func getTMDBSeasonAirDates(imdbID string, season int) map[int]string {
             }
         }
 
-        tmdbSeasonAirDateCache.Set(cacheKey, airDates)
-        return airDates, nil
+        details := tmdbSeasonDetails{
+            AirDates:     airDates,
+            EpisodeCount: len(data.Episodes),
+        }
+
+        tmdbSeasonAirDateCache.Set(cacheKey, details)
+        return details, nil
     })
 
     if err != nil {
-        return nil
+        return tmdbSeasonDetails{AirDates: make(map[int]string)}
     }
-    return res.(map[int]string)
+    return res.(tmdbSeasonDetails)
 }
 
-func getTMDBOriginalTitle(imdbID string) string {
+func getTMDBSeasonAirDates(imdbID string, season int) map[int]string {
+    return getTMDBSeasonDetails(imdbID, season).AirDates
+}
+
+func getTMDBDetails(imdbID string) tmdbDetails {
     if !useTMDB {
-        return ""
+        return tmdbDetails{}
     }
 
-    if cached, ok := tmdbOrigTitleCache.Get(imdbID); ok {
+    if cached, ok := tmdbDetailsCache.Get(imdbID); ok {
         return cached
     }
 
-    res, err, _ := origTitleSingleflight.Do(imdbID, func() (interface{}, error) {
-        if cached, ok := tmdbOrigTitleCache.Get(imdbID); ok {
+    res, err, _ := tmdbDetailsSingleflight.Do(imdbID, func() (interface{}, error) {
+        if cached, ok := tmdbDetailsCache.Get(imdbID); ok {
             return cached, nil
         }
 
         tmdbID, isMovie, _, err := resolveTMDBID(imdbID)
         if err != nil || tmdbID == 0 {
-            return "", err
+            return tmdbDetails{}, err
         }
 
         var u string
@@ -341,7 +361,7 @@ func getTMDBOriginalTitle(imdbID string) string {
 
         resp, err := fetchWithRetry(ctx, http.DefaultClient, req)
         if err != nil || resp.StatusCode != 200 {
-            return "", err
+            return tmdbDetails{}, err
         }
         defer func() {
             _, _ = io.Copy(io.Discard, resp.Body)
@@ -349,11 +369,15 @@ func getTMDBOriginalTitle(imdbID string) string {
         }()
 
         var details struct {
-            OriginalTitle string `json:"original_title"`
-            OriginalName  string `json:"original_name"`
+            OriginalTitle string   `json:"original_title"`
+            OriginalName  string   `json:"original_name"`
+            OriginCountry []string `json:"origin_country"`
+            Genres        []struct {
+                ID int `json:"id"`
+            } `json:"genres"`
         }
         if err := sonic.ConfigStd.NewDecoder(resp.Body).Decode(&details); err != nil {
-            return "", err
+            return tmdbDetails{}, err
         }
 
         title := details.OriginalTitle
@@ -361,16 +385,32 @@ func getTMDBOriginalTitle(imdbID string) string {
             title = details.OriginalName
         }
 
-        if title != "" {
-            tmdbOrigTitleCache.Set(imdbID, title)
+        isAnimation := false
+        for _, g := range details.Genres {
+            if g.ID == 16 {
+                isAnimation = true
+                break
+            }
         }
-        return title, nil
+
+        val := tmdbDetails{
+            OriginalTitle: title,
+            OriginCountry: details.OriginCountry,
+            IsAnimation:   isAnimation,
+        }
+
+        tmdbDetailsCache.Set(imdbID, val)
+        return val, nil
     })
 
     if err != nil {
-        return ""
+        return tmdbDetails{}
     }
-    return res.(string)
+    return res.(tmdbDetails)
+}
+
+func getTMDBOriginalTitle(imdbID string) string {
+    return getTMDBDetails(imdbID).OriginalTitle
 }
 
 func getTMDBAlternativeTitles(imdbID string, enableAltTitles bool, altTitleCountry string) ([]string, error) {
@@ -675,6 +715,9 @@ func imdbMetaProvider(id, preferredLanguage string, enableAltTitles bool, altTit
 
     var origLang string
     var airDate string
+    var isAnimation bool
+    var originCountries []string
+    var seasonEpisodeCount int
     if useTMDB {
         altTitles, err := getTMDBAlternativeTitles(tt, enableAltTitles, altTitleCountry)
         if err == nil && len(altTitles) > 0 {
@@ -692,7 +735,11 @@ func imdbMetaProvider(id, preferredLanguage string, enableAltTitles bool, altTit
             }
         }
 
-        origTitle := getTMDBOriginalTitle(tt)
+        tmDetails := getTMDBDetails(tt)
+        origTitle := tmDetails.OriginalTitle
+        isAnimation = tmDetails.IsAnimation
+        originCountries = tmDetails.OriginCountry
+
         if origTitle != "" {
             isDup := false
             for _, existing := range alternatives {
@@ -711,10 +758,12 @@ func imdbMetaProvider(id, preferredLanguage string, enableAltTitles bool, altTit
         sInt, _ := strconv.Atoi(season)
         eInt, _ := strconv.Atoi(episode)
         if sInt > 0 && eInt > 0 {
-            airDates := getTMDBSeasonAirDates(tt, sInt)
+            sDetails := getTMDBSeasonDetails(tt, sInt)
+            airDates := sDetails.AirDates
             if len(airDates) > 0 {
                 airDate = airDates[eInt]
             }
+            seasonEpisodeCount = sDetails.EpisodeCount
         }
     }
 
@@ -777,14 +826,17 @@ func imdbMetaProvider(id, preferredLanguage string, enableAltTitles bool, altTit
     }
 
     return MetaProviderResponse{
-        Name:             originalName,
-        OriginalName:     originalName,
-        AlternativeNames: alternatives,
-        Year:             item.Y,
-        Season:           season,
-        Episode:          episode,
-        OriginalLanguage: origLang,
-        EpisodeAirDate:   airDate,
+        Name:               originalName,
+        OriginalName:       originalName,
+        AlternativeNames:   alternatives,
+        Year:               item.Y,
+        Season:             season,
+        Episode:            episode,
+        OriginalLanguage:   origLang,
+        EpisodeAirDate:     airDate,
+        IsAnimation:        isAnimation,
+        OriginCountries:    originCountries,
+        SeasonEpisodeCount: seasonEpisodeCount,
     }, nil
 }
 
@@ -844,6 +896,9 @@ func cinemetaMetaProvider(id, contentType, preferredLanguage string, enableAltTi
 
     var origLang string
     var airDate string
+    var isAnimation bool
+    var originCountries []string
+    var seasonEpisodeCount int
     if useTMDB {
         altTitles, err := getTMDBAlternativeTitles(tt, enableAltTitles, altTitleCountry)
         if err == nil && len(altTitles) > 0 {
@@ -861,7 +916,11 @@ func cinemetaMetaProvider(id, contentType, preferredLanguage string, enableAltTi
             }
         }
 
-        origTitle := getTMDBOriginalTitle(tt)
+        tmDetails := getTMDBDetails(tt)
+        origTitle := tmDetails.OriginalTitle
+        isAnimation = tmDetails.IsAnimation
+        originCountries = tmDetails.OriginCountry
+
         if origTitle != "" {
             isDup := false
             for _, existing := range alternatives {
@@ -880,10 +939,12 @@ func cinemetaMetaProvider(id, contentType, preferredLanguage string, enableAltTi
         sInt, _ := strconv.Atoi(season)
         eInt, _ := strconv.Atoi(episode)
         if sInt > 0 && eInt > 0 {
-            airDates := getTMDBSeasonAirDates(tt, sInt)
+            sDetails := getTMDBSeasonDetails(tt, sInt)
+            airDates := sDetails.AirDates
             if len(airDates) > 0 {
                 airDate = airDates[eInt]
             }
+            seasonEpisodeCount = sDetails.EpisodeCount
         }
     }
 
@@ -933,14 +994,17 @@ func cinemetaMetaProvider(id, contentType, preferredLanguage string, enableAltTi
     }
 
     return MetaProviderResponse{
-        Name:             name,
-        OriginalName:     name,
-        AlternativeNames: alternatives,
-        Year:             yearVal,
-        Season:           season,
-        Episode:          episode,
-        OriginalLanguage: origLang,
-        EpisodeAirDate:   airDate,
+        Name:               name,
+        OriginalName:       name,
+        AlternativeNames:   alternatives,
+        Year:               yearVal,
+        Season:             season,
+        Episode:            episode,
+        OriginalLanguage:   origLang,
+        EpisodeAirDate:     airDate,
+        IsAnimation:        isAnimation,
+        OriginCountries:    originCountries,
+        SeasonEpisodeCount: seasonEpisodeCount,
     }, nil
 }
 
