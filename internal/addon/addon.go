@@ -263,7 +263,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
         config.MaxResultsPerQuality,
         config.MaxFileSize,
         config.EnableAltTitles,
-        config.AltCountry,
+        config.AltTitleCountry,
     )
 
     if cached, ok := getFromRequestCache(cacheKey); ok {
