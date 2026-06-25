@@ -96,9 +96,10 @@ func (c *BoundedCache[K, V]) Set(key K, value V) {
 }
 
 type tmdbDetails struct {
-    OriginalTitle string
-    OriginCountry []string
-    IsAnimation   bool
+    OriginalTitle       string
+    OriginCountry       []string
+    IsAnimation         bool
+    SeasonEpisodeCounts map[int]int // Maps season_number -> episode_count
 }
 
 type tmdbSeasonDetails struct {
@@ -375,6 +376,10 @@ func getTMDBDetails(imdbID string) tmdbDetails {
             Genres        []struct {
                 ID int `json:"id"`
             } `json:"genres"`
+            Seasons       []struct {
+                SeasonNumber int `json:"season_number"`
+                EpisodeCount int `json:"episode_count"`
+            } `json:"seasons"`
         }
         if err := sonic.ConfigStd.NewDecoder(resp.Body).Decode(&details); err != nil {
             return tmdbDetails{}, err
@@ -393,10 +398,16 @@ func getTMDBDetails(imdbID string) tmdbDetails {
             }
         }
 
+        counts := make(map[int]int)
+        for _, s := range details.Seasons {
+            counts[s.SeasonNumber] = s.EpisodeCount
+        }
+
         val := tmdbDetails{
-            OriginalTitle: title,
-            OriginCountry: details.OriginCountry,
-            IsAnimation:   isAnimation,
+            OriginalTitle:       title,
+            OriginCountry:       details.OriginCountry,
+            IsAnimation:         isAnimation,
+            SeasonEpisodeCounts: counts,
         }
 
         tmdbDetailsCache.Set(imdbID, val)
@@ -718,6 +729,7 @@ func imdbMetaProvider(id, preferredLanguage string, enableAltTitles bool, altTit
     var isAnimation bool
     var originCountries []string
     var seasonEpisodeCount int
+    var counts map[int]int
     if useTMDB {
         altTitles, err := getTMDBAlternativeTitles(tt, enableAltTitles, altTitleCountry)
         if err == nil && len(altTitles) > 0 {
@@ -739,6 +751,7 @@ func imdbMetaProvider(id, preferredLanguage string, enableAltTitles bool, altTit
         origTitle := tmDetails.OriginalTitle
         isAnimation = tmDetails.IsAnimation
         originCountries = tmDetails.OriginCountry
+        counts = tmDetails.SeasonEpisodeCounts
 
         if origTitle != "" {
             isDup := false
@@ -837,6 +850,7 @@ func imdbMetaProvider(id, preferredLanguage string, enableAltTitles bool, altTit
         IsAnimation:        isAnimation,
         OriginCountries:    originCountries,
         SeasonEpisodeCount: seasonEpisodeCount,
+        SeasonEpisodeCounts: counts,
     }, nil
 }
 
@@ -899,6 +913,7 @@ func cinemetaMetaProvider(id, contentType, preferredLanguage string, enableAltTi
     var isAnimation bool
     var originCountries []string
     var seasonEpisodeCount int
+    var counts map[int]int
     if useTMDB {
         altTitles, err := getTMDBAlternativeTitles(tt, enableAltTitles, altTitleCountry)
         if err == nil && len(altTitles) > 0 {
@@ -920,6 +935,7 @@ func cinemetaMetaProvider(id, contentType, preferredLanguage string, enableAltTi
         origTitle := tmDetails.OriginalTitle
         isAnimation = tmDetails.IsAnimation
         originCountries = tmDetails.OriginCountry
+        counts = tmDetails.SeasonEpisodeCounts
 
         if origTitle != "" {
             isDup := false
@@ -948,7 +964,7 @@ func cinemetaMetaProvider(id, contentType, preferredLanguage string, enableAltTi
         }
     }
 
-    translitName := Transliterate(name)
+    translitName := name
     if translitName != name && translitName != "" {
         isDup := false
         for _, existing := range alternatives {
@@ -1005,6 +1021,7 @@ func cinemetaMetaProvider(id, contentType, preferredLanguage string, enableAltTi
         IsAnimation:        isAnimation,
         OriginCountries:    originCountries,
         SeasonEpisodeCount: seasonEpisodeCount,
+        SeasonEpisodeCounts: counts,
     }, nil
 }
 
