@@ -4,6 +4,7 @@ import (
     "context"
     "encoding/base64"
     "fmt"
+    "math"
     "net/url"
     "sort"
     "strconv"
@@ -216,6 +217,37 @@ func isSpinoff(title, primaryName string) bool {
     return false
 }
 
+// Helper to filter alternative titles for series-Scoped spinoffs
+func filterAlternativeTitles(contentType string, name string, alternativeNames []string) []string {
+    var filtered []string
+    for _, alt := range alternativeNames {
+        if contentType == "series" && isSpinoff(alt, name) {
+            continue
+        }
+        
+        isDup := false
+        if SanitizeTitle(alt) == SanitizeTitle(name) {
+            isDup = true
+        }
+        for _, f := range filtered {
+            if SanitizeTitle(f) == SanitizeTitle(alt) {
+                isDup = true
+                break
+            }
+        }
+        
+        if !isDup {
+            filtered = append(filtered, alt)
+        }
+    }
+    
+    // Capping at 2 alternative titles to prevent Solr query explosion (1 primary + 2 alts)
+    if len(filtered) > 2 {
+        filtered = filtered[:2]
+    }
+    return filtered
+}
+
 func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerResult, error) {
     if !strings.HasPrefix(id, "tt") {
         return StreamHandlerResult{Streams: []Stream{}}, nil
@@ -282,29 +314,11 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 
     addonLogger.Info("Initiating search for '%s' (type: %s, strict matching: %v, preferred lang: '%s')", meta.Name, contentType, useStrictMatching, preferredLang)
 
-    // Architectural Fix: Keep allTitles intact for local matching
-    allTitles := []string{meta.Name}
-    if meta.AlternativeNames != nil {
-        for _, alt := range meta.AlternativeNames {
-            // Apply spinoff filter only for series content. Movie alternative titles 
-            // from TMDB are safe because movies are ID-isolated (no seasons/specials).
-            if contentType == "series" && isSpinoff(alt, meta.Name) {
-                continue
-            }
-            found := false
-            for _, t := range allTitles {
-                if SanitizeTitle(t) == SanitizeTitle(alt) {
-                    found = true
-                    break
-                }
-            }
-            if !found {
-                allTitles = append(allTitles, alt)
-            }
-        }
-    }
-    
-    // Expand abbreviations and deduplicate again
+    // Filter spinoffs and select clean target alternative titles
+    filteredAlts := filterAlternativeTitles(contentType, meta.Name, meta.AlternativeNames)
+
+    // Construct full titles mapping list for matching, including abbreviations
+    allTitles := append([]string{meta.Name}, filteredAlts...)
     for _, tv := range allTitles {
         expanded := ExpandAbbreviations(tv)
         if expanded != tv {
@@ -321,46 +335,47 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
         }
     }
 
-    // Architectural Fix: Create a separate searchTitles array strictly for Solr queries, capped at 3.
-    searchTitles := make([]string, len(allTitles))
-    copy(searchTitles, allTitles)
-    if len(searchTitles) > 3 {
-        searchTitles = searchTitles[:3] // 1 primary + 2 alts
-    }
+    var primaryQueries []string
+    var primaryLegacyQueries []string
+    var primaryDateQueries []string
+    var altQueries []string
+    var altLegacyQueries []string
+    var altDateQueries []string
+    var broadQueries []string
 
-    // Split primary and alternative titles for Cascade Gating
-    primaryTitles := []string{meta.Name}
-    altTitles := []string{}
-    if len(searchTitles) > 1 {
-        altTitles = searchTitles[1:]
-    }
+    // Generate isolated, dedicated formats to ensure standard S/E is executed first
+    if contentType == "movie" {
+        primaryQueries = BuildOptimizedGroupedQueries(contentType, meta, []string{meta.Name}, "standard")
+        if len(filteredAlts) > 0 {
+            altQueries = BuildOptimizedGroupedQueries(contentType, meta, filteredAlts, "standard")
+        }
+        
+        mNoYear := meta
+        mNoYear.Year = 0
+        broadQueries = BuildOptimizedGroupedQueries(contentType, mNoYear, append([]string{meta.Name}, filteredAlts...), "standard")
+    } else if contentType == "series" {
+        // Compile standard and fallback segments individually
+        primaryQueries = BuildOptimizedGroupedQueries(contentType, meta, []string{meta.Name}, "standard")
+        primaryLegacyQueries = BuildOptimizedGroupedQueries(contentType, meta, []string{meta.Name}, "legacy")
+        if meta.EpisodeAirDate != "" {
+            primaryDateQueries = BuildOptimizedGroupedQueries(contentType, meta, []string{meta.Name}, "date")
+        }
 
-    // Bug 2 Fix: Adaptive Query Routing. Separate queries by format type.
-    // Phase 1: Standard SXXEXX (Fast Path)
-    primaryStandardQueries := BuildOptimizedGroupedQueries(contentType, meta, primaryTitles, "standard")
-    
-    // Phase 1.5: Legacy XXxXX (Lazy Gate)
-    primaryLegacyQueries := []string{}
-    if contentType == "series" {
-        primaryLegacyQueries = BuildOptimizedGroupedQueries(contentType, meta, primaryTitles, "legacy")
-    }
-    
-    // Phase 2: Date Formats (Lazy Gate)
-    dateQueries := []string{}
-    if contentType == "series" && meta.EpisodeAirDate != "" {
-        dateQueries = BuildOptimizedGroupedQueries(contentType, meta, searchTitles, "date")
-    }
+        if len(filteredAlts) > 0 {
+            altQueries = BuildOptimizedGroupedQueries(contentType, meta, filteredAlts, "standard")
+            altLegacyQueries = BuildOptimizedGroupedQueries(contentType, meta, filteredAlts, "legacy")
+            if meta.EpisodeAirDate != "" {
+                altDateQueries = BuildOptimizedGroupedQueries(contentType, meta, filteredAlts, "date")
+            }
+        }
 
-    // Phase 3: Alternative S/E Titles (Lazy Gate)
-    altStandardQueries := BuildOptimizedGroupedQueries(contentType, meta, altTitles, "standard")
-
-    // Broad fallback (no year/episode/date)
-    mNoYear := meta
-    mNoYear.Year = 0
-    mNoYear.Season = ""
-    mNoYear.Episode = ""
-    mNoYear.EpisodeAirDate = ""
-    broadQueries := BuildOptimizedGroupedQueries(contentType, mNoYear, searchTitles, "all")
+        mNoYear := meta
+        mNoYear.Year = 0
+        mNoYear.Season = ""
+        mNoYear.Episode = ""
+        mNoYear.EpisodeAirDate = ""
+        broadQueries = BuildOptimizedGroupedQueries(contentType, mNoYear, append([]string{meta.Name}, filteredAlts...), "standard")
+    }
 
     searchConcurrency := shared.ParseIntEnv("SEARCH_CONCURRENCY", 5)
     if searchConcurrency < 1 {
@@ -461,54 +476,58 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
         return nil
     }
 
-    // 1. Primary Phase (Standard Fast Path)
-    if len(primaryStandardQueries) > 0 {
-        if err := runSearchPhase(primaryStandardQueries); err != nil {
-            addonLogger.Error("Easynews API search failed with authorization/connection error: %v", err)
+    // 1. Primary Phase (Standard S/E Fast Path - SXXEXX only): Completes instantly in ~200ms
+    if len(primaryQueries) > 0 {
+        if err := runSearchPhase(primaryQueries); err != nil {
+            addonLogger.Error("Easynews API search failed: %v", err)
             return authErrorStream(config.UILanguage), nil
         }
     }
 
-    // 2. Lazy Gate 1.5: Legacy Format (Only if standard yields < 10)
+    // 1.1. Primary Legacy Fallback Phase (XXxXX): ONLY if standard S/E was sparse (< 10)
     if totalFoundResults < 10 && len(primaryLegacyQueries) > 0 {
-        addonLogger.Info("Sparse results (%d) in standard phase. Running legacy S/E queries...", totalFoundResults)
-        if err := runSearchPhase(primaryLegacyQueries); err != nil {
-            addonLogger.Error("Easynews API search (legacy fallback) failed: %v", err)
-        }
+        addonLogger.Info("Primary standard S/E sparse (%d). Running primary legacy queries...", totalFoundResults)
+        _ = runSearchPhase(primaryLegacyQueries)
     }
 
-    // 3. Lazy Gate 2: Date Fallback (Only if S/E results < 10)
-    if totalFoundResults < 10 && len(dateQueries) > 0 {
-        addonLogger.Info("Sparse results (%d) in S/E phases. Running date queries...", totalFoundResults)
-        if err := runSearchPhase(dateQueries); err != nil {
-            addonLogger.Error("Easynews API search (date fallback) failed: %v", err)
-        }
+    // 1.5. Primary Date Fallback Phase: ONLY if primary standard/legacy was sparse and we have a daily date
+    if totalFoundResults < 10 && len(primaryDateQueries) > 0 {
+        addonLogger.Info("Primary standard/legacy sparse (%d). Running primary date-based queries...", totalFoundResults)
+        _ = runSearchPhase(primaryDateQueries)
     }
 
-    // 4. Lazy Gate 3: Alternative Titles (Only if still < 10)
-    if totalFoundResults < 10 && len(altStandardQueries) > 0 {
-        addonLogger.Info("Sparse results (%d) found. Running alternative title queries...", totalFoundResults)
-        if err := runSearchPhase(altStandardQueries); err != nil {
-            addonLogger.Error("Easynews API search (alt fallback) failed: %v", err)
-        }
+    // 2. Sequential Cascade Gating: Alternative Titles Standard S/E (Only if results still sparse < 10)
+    if totalFoundResults < 10 && len(altQueries) > 0 {
+        addonLogger.Info("Sparse results (%d) in primary phase. Running alternative standard queries...", totalFoundResults)
+        _ = runSearchPhase(altQueries)
     }
 
-    // 5. Lazy Gate 4: Broad searches (Only if results are still sparse < 10)
+    // 2.1. Alternative Legacy Fallback Phase: ONLY if results are still sparse (< 10)
+    if totalFoundResults < 10 && len(altLegacyQueries) > 0 {
+        addonLogger.Info("Alternative standard sparse (%d). Running alternative legacy queries...", totalFoundResults)
+        _ = runSearchPhase(altLegacyQueries)
+    }
+
+    // 2.5. Alternative Date Fallback Phase: ONLY if results are still sparse (< 10)
+    if totalFoundResults < 10 && len(altDateQueries) > 0 {
+        addonLogger.Info("Primary & Alt S/E sparse (%d). Running alternative date queries...", totalFoundResults)
+        _ = runSearchPhase(altDateQueries)
+    }
+
+    // 3. Lazy Gate Fallback: Broad searches (Only if results are still sparse < 10)
     if totalFoundResults < 10 && len(broadQueries) > 0 {
         addonLogger.Info("Sparse results (%d) found. Running broad fallbacks...", totalFoundResults)
-        if err := runSearchPhase(broadQueries); err != nil {
-            addonLogger.Error("Easynews API search (broad fallback) failed: %v", err)
-        }
+        _ = runSearchPhase(broadQueries)
     }
 
     targetSeason, _ := strconv.Atoi(meta.Season)
     targetEpisode, _ := strconv.Atoi(meta.Episode)
 
-    // 6. Lazy Gate 5: Absolute episode fallback for series (Only if results are extremely low < 5)
+    // 4. Absolute episode fallback for series (Only if results are extremely low < 5)
     if contentType == "series" && totalFoundResults < 5 && targetEpisode > 0 {
         addonLogger.Info("Low results (%d) for series '%s'. Running absolute episode fallback...", totalFoundResults, meta.Name)
         var absFallbackQueries []string
-        // Architectural Fix: Use searchTitles (capped at 3) to prevent query explosion
+        searchTitles := append([]string{meta.Name}, filteredAlts...)
         for _, titleVariant := range searchTitles {
             if strings.TrimSpace(titleVariant) == "" || !IsLatinString(titleVariant) {
                 continue
@@ -516,9 +535,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
             absFallbackQueries = append(absFallbackQueries, fmt.Sprintf("%s %d !sample !trailer !passwd !password !preview", titleVariant, targetEpisode))
         }
         if len(absFallbackQueries) > 0 {
-            if err := runSearchPhase(absFallbackQueries); err != nil {
-                addonLogger.Error("Easynews API search (absolute fallback) failed: %v", err)
-            }
+            _ = runSearchPhase(absFallbackQueries)
         }
     }
 
@@ -563,7 +580,49 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
             }
             processedHashes[fileHash] = struct{}{}
 
+            // Tier 1: Hard Deterministic Temporal Shield (0-allocation, executes in 1µs)
+            if isNewerShowDisqualified(file.Ts, meta.Year) {
+                rejectedTitle++
+                continue
+            }
+
+            // Tier 2: Probabilistic Bayesian LLR Gated Shield
+            if contentType == "series" {
+                targetPrior := ClassifyTargetPrior(meta)
+                
+                // Only evaluate LLR patterns if the target classification is highly confident
+                if math.Abs(targetPrior) >= 3.0 {
+                    candScore := ComputeCandidateScore(title)
+                    
+                    if targetPrior > 3.0 && candScore < -3.0 {
+                        rejectedTitle++
+                        continue
+                    }
+                    if targetPrior < -3.0 && candScore > 4.0 {
+                        rejectedTitle++
+                        continue
+                    }
+                }
+            }
+
             parsedInfo := RobustParseInfo(title, 0)
+
+            // Tier 3: Double-Sided Title Isolation (Disqualifies Castle Rock episode "Severance")
+            if len(parsedInfo.Title) > 0 {
+                sanitizedParsed := SanitizeTitle(parsedInfo.Title)
+                anyMatch := false
+                for _, tv := range allTitles {
+                    sanitizedMeta := SanitizeTitle(tv)
+                    if strings.Contains(sanitizedParsed, sanitizedMeta) || strings.Contains(sanitizedMeta, sanitizedParsed) {
+                        anyMatch = true
+                        break
+                    }
+                }
+                if !anyMatch {
+                    rejectedTitle++
+                    continue
+                }
+            }
 
             if contentType == "series" {
                 matched := false
