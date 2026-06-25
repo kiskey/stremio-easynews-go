@@ -599,8 +599,9 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
             }
 
             // Tier 2: Probabilistic Bayesian LLR Gated Shield
+            targetPrior := 0.0
             if contentType == "series" {
-                targetPrior := ClassifyTargetPrior(meta)
+                targetPrior = ClassifyTargetPrior(meta)
                 
                 // Only evaluate LLR patterns if the target classification is highly confident
                 if math.Abs(targetPrior) >= 3.0 {
@@ -614,6 +615,16 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
                         rejectedTitle++
                         continue
                     }
+                }
+            }
+
+            // Anime Hour-Long Duration Guardrail (reboot-proofing for continuous anime series)
+            if contentType == "series" && targetPrior > 3.0 {
+                durationStr := file.GetDuration()
+                // Standard anime episodes are 20-25m. If the candidate is an hour or more, reject.
+                if strings.Contains(durationStr, "h") || strings.Contains(durationStr, "hour") {
+                    rejectedTitle++
+                    continue
                 }
             }
 
