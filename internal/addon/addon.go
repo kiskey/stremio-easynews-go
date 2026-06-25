@@ -187,12 +187,41 @@ func configErrorStream() StreamHandlerResult {
     }
 }
 
+// Spinoff Identification & Pruning (Series-Scoped)
+var spinoffKeywords = []string{"special", "edited", "saga", "recap", "scenes", "interview", "letter", "spinoff", "movie", "film", "ova", "ona", "oad", "re-edited", "collaboration", "crossover"}
+
+func isSpinoff(title, primaryName string) bool {
+    lowerTitle := strings.ToLower(title)
+    lowerPrimary := strings.ToLower(primaryName)
+    
+    // Edge Case Fix: Only trigger keyword pruning if the keyword is newly introduced 
+    // in the alt title and is NOT part of the primary title's core identity.
+    for _, kw := range spinoffKeywords {
+        if strings.Contains(lowerTitle, kw) && !strings.Contains(lowerPrimary, kw) {
+            return true
+        }
+    }
+    
+    if len(primaryName) > 0 {
+        if float64(len(title))/float64(len(primaryName)) > 2.5 {
+            return true
+        }
+        if strings.Contains(lowerTitle, lowerPrimary) && len(strings.Fields(title)) > len(strings.Fields(primaryName)) {
+            return true
+        }
+    }
+    if len(strings.Fields(title)) > 4 {
+        return true
+    }
+    return false
+}
+
 func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerResult, error) {
     if !strings.HasPrefix(id, "tt") {
         return StreamHandlerResult{Streams: []Stream{}}, nil
     }
 
-    cacheKey := fmt.Sprintf("%s:v15:user=%s:strict=%s:lang=%s:sort=%s:qualities=%s:maxPerQuality=%s:maxSize=%s:enableAlt=%s:altCountry=%s",
+    cacheKey := fmt.Sprintf("%s:v17:user=%s:strict=%s:lang=%s:sort=%s:qualities=%s:maxPerQuality=%s:maxSize=%s:enableAlt=%s:altCountry=%s",
         id,
         config.Username,
         config.StrictTitleMatching,
@@ -253,9 +282,16 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 
     addonLogger.Info("Initiating search for '%s' (type: %s, strict matching: %v, preferred lang: '%s')", meta.Name, contentType, useStrictMatching, preferredLang)
 
+    // Architectural Fix: Restrict Spinoff Pruning to Series content only.
+    // TMDB movie IDs are isolated; alternative titles for a movie ID are strictly
+    // translations of that exact film. Applying spinoff pruning to movies causes
+    // false negatives (e.g., "Dune: Part One" being pruned from "Dune").
     allTitles := []string{meta.Name}
     if meta.AlternativeNames != nil {
         for _, alt := range meta.AlternativeNames {
+            if contentType == "series" && isSpinoff(alt, meta.Name) {
+                continue
+            }
             found := false
             for _, t := range allTitles {
                 if SanitizeTitle(t) == SanitizeTitle(alt) {
@@ -268,7 +304,8 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
             }
         }
     }
-
+    
+    // Expand abbreviations and deduplicate again
     for _, tv := range allTitles {
         expanded := ExpandAbbreviations(tv)
         if expanded != tv {
@@ -285,29 +322,31 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
         }
     }
 
-    var primaryQueries []string
-    var fallbackQueries []string
-
-    if contentType == "movie" {
-        if meta.Year > 0 {
-            if isMultiWord(meta.Name) {
-                // Consolidated year-specific grouped query
-                primaryQueries = BuildOptimizedGroupedQueries(contentType, meta, allTitles)
-                
-                // Keep broad title-only fallback query separate
-                mNoYear := meta
-                mNoYear.Year = 0
-                fallbackQueries = BuildOptimizedGroupedQueries(contentType, mNoYear, allTitles)
-            } else {
-                // Single-word movie: ONLY search with year to prevent index pollution
-                primaryQueries = BuildOptimizedGroupedQueries(contentType, meta, allTitles)
-            }
-        } else {
-            primaryQueries = BuildOptimizedGroupedQueries(contentType, meta, allTitles)
-        }
-    } else if contentType == "series" {
-        primaryQueries = BuildOptimizedGroupedQueries(contentType, meta, allTitles)
+    // Restrict maximum number of alternative titles sent to the Solr API to top 2 pruned names
+    if len(allTitles) > 3 {
+        allTitles = allTitles[:3] // 1 primary + 2 alts
     }
+
+    // Split primary and alternative titles for Cascade Gating
+    primaryTitles := []string{meta.Name}
+    altTitles := []string{}
+    if len(allTitles) > 1 {
+        altTitles = allTitles[1:]
+    }
+
+    // Primary Phase (Fast Path): ONLY primary title
+    primaryQueries := BuildOptimizedGroupedQueries(contentType, meta, primaryTitles)
+    
+    // Alt Phase: The rest of the titles
+    altQueries := BuildOptimizedGroupedQueries(contentType, meta, altTitles)
+    
+    // Broad fallback (no year/episode)
+    mNoYear := meta
+    mNoYear.Year = 0
+    mNoYear.Season = ""
+    mNoYear.Episode = ""
+    mNoYear.EpisodeAirDate = ""
+    broadQueries := BuildOptimizedGroupedQueries(contentType, mNoYear, allTitles)
 
     searchConcurrency := shared.ParseIntEnv("SEARCH_CONCURRENCY", 5)
     if searchConcurrency < 1 {
@@ -315,9 +354,13 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
     }
     totalMaxResults := shared.ParseIntEnv("TOTAL_MAX_RESULTS", 500)
 
-    // Helper to check if a file is likely a valid video (not a sample)
+    // Anime & Legacy SD File Size Protection
+    minValidSize := int64(80 * 1024 * 1024) // 80MB for series
+    if contentType == "movie" {
+        minValidSize = int64(300 * 1024 * 1024) // 300MB for movies
+    }
     isValidSize := func(file api.FileData) bool {
-        return file.RawSize > 500*1024*1024
+        return file.RawSize >= minValidSize
     }
 
     type searchResult struct {
@@ -387,7 +430,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
                     resultsMu.Unlock()
 
                     if validFileCount >= 15 {
-                        addonLogger.Info("Early exit triggered: Found %d valid (>500MB) results, cancelling remaining searches.", validFileCount)
+                        addonLogger.Info("Early exit triggered: Found %d valid results, cancelling remaining searches.", validFileCount)
                         cancel()
                     }
                 }
@@ -404,7 +447,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
         return nil
     }
 
-    // 1. Primary Phase: Run the optimized grouped queries
+    // 1. Primary Phase (Fast Path)
     if len(primaryQueries) > 0 {
         if err := runSearchPhase(primaryQueries); err != nil {
             addonLogger.Error("Easynews API search failed with authorization/connection error: %v", err)
@@ -412,19 +455,26 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
         }
     }
 
-    // 2. Lazy Gate Fallback 1: Only run broad fallback searches if the primary queries return sparse results (< 15)
-    if totalFoundResults < 15 && len(fallbackQueries) > 0 {
-        addonLogger.Info("Sparse results (%d) found in primary phase. Running broad fallbacks...", totalFoundResults)
-        if err := runSearchPhase(fallbackQueries); err != nil {
+    // 2. Sequential Cascade Gating: Alternative Titles (Only if primary yields < 10)
+    if totalFoundResults < 10 && len(altQueries) > 0 {
+        addonLogger.Info("Sparse results (%d) in primary phase. Running alternative title queries...", totalFoundResults)
+        if err := runSearchPhase(altQueries); err != nil {
+            addonLogger.Error("Easynews API search (alt fallback) failed: %v", err)
+        }
+    }
+
+    // 3. Lazy Gate Fallback: Broad searches (Only if results are still sparse < 10)
+    if totalFoundResults < 10 && len(broadQueries) > 0 {
+        addonLogger.Info("Sparse results (%d) found. Running broad fallbacks...", totalFoundResults)
+        if err := runSearchPhase(broadQueries); err != nil {
             addonLogger.Error("Easynews API search (broad fallback) failed: %v", err)
-            return authErrorStream(config.UILanguage), nil
         }
     }
 
     targetSeason, _ := strconv.Atoi(meta.Season)
     targetEpisode, _ := strconv.Atoi(meta.Episode)
 
-    // 3. Lazy Gate Fallback 2: Only run absolute episode fallback for series if results are extremely low (< 5)
+    // 4. Lazy Gate Fallback: Absolute episode fallback for series (Only if results are extremely low < 5)
     if contentType == "series" && totalFoundResults < 5 && targetEpisode > 0 {
         addonLogger.Info("Low results (%d) for series '%s'. Running absolute episode fallback...", totalFoundResults, meta.Name)
         var absFallbackQueries []string
@@ -437,22 +487,6 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
         if len(absFallbackQueries) > 0 {
             if err := runSearchPhase(absFallbackQueries); err != nil {
                 addonLogger.Error("Easynews API search (absolute fallback) failed: %v", err)
-            }
-        }
-    }
-
-    if contentType == "series" && totalFoundResults < 5 && isMultiWord(meta.Name) {
-        addonLogger.Info("Low results (%d) for multi-word series '%s'. Running title-only fallback search...", totalFoundResults, meta.Name)
-        
-        mNoEp := meta
-        mNoEp.Season = ""
-        mNoEp.Episode = ""
-        mNoEp.EpisodeAirDate = ""
-        titleFallbackQueries := BuildOptimizedGroupedQueries("series", mNoEp, allTitles)
-        
-        if len(titleFallbackQueries) > 0 {
-            if err := runSearchPhase(titleFallbackQueries); err != nil {
-                addonLogger.Error("Easynews API search (title-only fallback) failed: %v", err)
             }
         }
     }
