@@ -196,75 +196,84 @@ func GetQuality(title string, fallbackResolution string) string {
     return ""
 }
 
-// Restored original Easynews API exclusion syntax (!)
-var easynewsExclusions = " !sample !trailer !passwd !password !preview"
+// BuildOptimizedGroupedQueries dynamically groups single-word titles using pipes
+// and outputs separate queries for multi-word titles to prevent space-AND conflicts.
+func BuildOptimizedGroupedQueries(contentType string, meta MetaProviderResponse, allTitles []string) []string {
+    var singleWords []string
+    var multiWords []string
 
-func BuildSearchQuery(contentType string, meta MetaProviderResponse) string {
-    safeName := SanitizeSolrString(meta.Name)
-
-    switch contentType {
-    case "movie":
-        if meta.Year > 0 {
-            // Only generate "Title Year" (primary) and "Title" (fallback)
-            return fmt.Sprintf("%s %d%s", safeName, meta.Year, easynewsExclusions)
+    for _, t := range allTitles {
+        trimmed := strings.TrimSpace(t)
+        if trimmed == "" || !IsLatinString(trimmed) {
+            continue
         }
-        return safeName + easynewsExclusions
-
-    case "series":
-        if meta.EpisodeAirDate != "" {
-            return fmt.Sprintf("%s %s%s", safeName, meta.EpisodeAirDate, easynewsExclusions)
+        // Apply Solr special character escaping
+        safeTitle := SanitizeSolrString(trimmed)
+        if safeTitle == "" {
+            continue
         }
-        if meta.Episode != "" && meta.Season != "" {
-            sNum, _ := strconv.Atoi(meta.Season)
-            eNum, _ := strconv.Atoi(meta.Episode)
 
-            if sNum > 0 && eNum > 0 {
-                return fmt.Sprintf("%s S%02dE%02d%s", safeName, sNum, eNum, easynewsExclusions)
-            }
+        // If the title contains spaces after sanitization, treat it as a multi-word phrase
+        if strings.Contains(safeTitle, " ") {
+            multiWords = append(multiWords, safeTitle)
+        } else {
+            singleWords = append(singleWords, safeTitle)
         }
-        return safeName + easynewsExclusions
-
-    default:
-        return safeName + easynewsExclusions
     }
-}
 
-func BuildSearchQueryVariants(contentType string, meta MetaProviderResponse) []string {
-    var variants []string
-    safeName := SanitizeSolrString(meta.Name)
+    // Build the high-density format-OR group
+    var formatGroup string
+    exclusions := " !sample !trailer !passwd !password !preview"
 
-    switch contentType {
-    case "movie":
+    if contentType == "movie" {
         if meta.Year > 0 {
-            // Removed the "(Year)" variant. Just use "Title Year" and "Title"
-            variants = append(variants, fmt.Sprintf("%s %d%s", safeName, meta.Year, easynewsExclusions))
+            formatGroup = strconv.Itoa(meta.Year)
         }
-        variants = append(variants, safeName+easynewsExclusions)
-    case "series":
-        if meta.EpisodeAirDate != "" {
-            variants = append(variants, fmt.Sprintf("%s %s%s", safeName, meta.EpisodeAirDate, easynewsExclusions))
-            dashDate := strings.ReplaceAll(meta.EpisodeAirDate, ".", "-")
-            if dashDate != meta.EpisodeAirDate {
-                variants = append(variants, fmt.Sprintf("%s %s%s", safeName, dashDate, easynewsExclusions))
-            }
-        }
+    } else if contentType == "series" {
+        var formats []string
         if meta.Season != "" && meta.Episode != "" {
             s, _ := strconv.Atoi(meta.Season)
             e, _ := strconv.Atoi(meta.Episode)
             if s > 0 && e > 0 {
-                variants = append(variants,
-                    fmt.Sprintf("%s S%02dE%02d%s", safeName, s, e, easynewsExclusions),
-                    fmt.Sprintf("%s %dx%02d%s", safeName, s, e, easynewsExclusions),
-                )
+                formats = append(formats, fmt.Sprintf("S%02dE%02d", s, e))
+                formats = append(formats, fmt.Sprintf("%dx%02d", s, e))
             }
         }
-        if len(variants) == 0 {
-            variants = append(variants, safeName+easynewsExclusions)
+        if meta.EpisodeAirDate != "" {
+            formats = append(formats, meta.EpisodeAirDate)
+            dashDate := strings.ReplaceAll(meta.EpisodeAirDate, ".", "-")
+            if dashDate != meta.EpisodeAirDate {
+                formats = append(formats, dashDate)
+            }
         }
-    default:
-        variants = append(variants, safeName+easynewsExclusions)
+        if len(formats) > 0 {
+            // Join all patterns with pipes to make a high-recall format group
+            formatGroup = strings.Join(formats, "|")
+        }
     }
-    return variants
+
+    var queries []string
+
+    // 1. Single-word Group: Group all single-word alternative titles with pipes
+    if len(singleWords) > 0 {
+        singleGroup := strings.Join(singleWords, "|")
+        if formatGroup != "" {
+            queries = append(queries, fmt.Sprintf("%s %s%s", singleGroup, formatGroup, exclusions))
+        } else {
+            queries = append(queries, singleGroup+exclusions)
+        }
+    }
+
+    // 2. Multi-word Phrases: Output individual queries for each multi-word title
+    for _, mw := range multiWords {
+        if formatGroup != "" {
+            queries = append(queries, fmt.Sprintf("%s %s%s", mw, formatGroup, exclusions))
+        } else {
+            queries = append(queries, mw+exclusions)
+        }
+    }
+
+    return queries
 }
 
 func ExtractDigits(value string) *int {
