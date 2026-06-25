@@ -38,12 +38,16 @@ type SortMeta struct {
 
 // MetaProviderResponse represents the standard metadata structure returned by providers (IMDb/Cinemeta).
 type MetaProviderResponse struct {
-    Name             string
-    OriginalName     string
-    AlternativeNames []string
-    Year             int
-    Season           string
-    Episode          string
-    OriginalLanguage string
-    EpisodeAirDate   string
+    Name               string
+    OriginalName       string
+    AlternativeNames   []string
+    Year               int
+    Season             string
+    Episode            string
+    OriginalLanguage   string
+    EpisodeAirDate     string
+    // Additive metadata fields for LLR priors (zero breaking changes)
+    IsAnimation        bool
+    OriginCountries    []string
+    SeasonEpisodeCount int
 }
