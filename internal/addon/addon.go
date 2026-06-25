@@ -221,7 +221,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
         return StreamHandlerResult{Streams: []Stream{}}, nil
     }
 
-    cacheKey := fmt.Sprintf("%s:v22:user=%s:strict=%s:lang=%s:sort=%s:qualities=%s:maxPerQuality=%s:maxSize=%s:enableAlt=%s:altCountry=%s",
+    cacheKey := fmt.Sprintf("%s:v23:user=%s:strict=%s:lang=%s:sort=%s:qualities=%s:maxPerQuality=%s:maxSize=%s:enableAlt=%s:altCountry=%s",
         id,
         config.Username,
         config.StrictTitleMatching,
@@ -335,19 +335,29 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
         altTitles = searchTitles[1:]
     }
 
-    // Primary Phase (Fast Path): ONLY primary title
-    primaryQueries := BuildOptimizedGroupedQueries(contentType, meta, primaryTitles)
+    // Bug 2 Fix: Adaptive Query Routing. Separate S/E queries from Date queries.
+    // Primary Phase (Fast Path): ONLY primary title, no dates
+    primaryQueries := BuildOptimizedGroupedQueries(contentType, meta, primaryTitles, false)
     
-    // Alt Phase: The rest of the titles
-    altQueries := BuildOptimizedGroupedQueries(contentType, meta, altTitles)
+    // Alt Phase: The rest of the titles, no dates
+    altQueries := BuildOptimizedGroupedQueries(contentType, meta, altTitles, false)
     
+    // Phase 1.5: Date queries (isolated to prevent index scanning on standard TV shows)
+    dateQueries := []string{}
+    if contentType == "series" && meta.EpisodeAirDate != "" {
+        mOnlyDates := meta
+        mOnlyDates.Season = ""
+        mOnlyDates.Episode = ""
+        dateQueries = BuildOptimizedGroupedQueries(contentType, mOnlyDates, searchTitles, true)
+    }
+
     // Broad fallback (no year/episode)
     mNoYear := meta
     mNoYear.Year = 0
     mNoYear.Season = ""
     mNoYear.Episode = ""
     mNoYear.EpisodeAirDate = ""
-    broadQueries := BuildOptimizedGroupedQueries(contentType, mNoYear, searchTitles)
+    broadQueries := BuildOptimizedGroupedQueries(contentType, mNoYear, searchTitles, false)
 
     searchConcurrency := shared.ParseIntEnv("SEARCH_CONCURRENCY", 5)
     if searchConcurrency < 1 {
@@ -464,7 +474,15 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
         }
     }
 
-    // 3. Lazy Gate Fallback: Broad searches (Only if results are still sparse < 10)
+    // 3. Adaptive Date Routing: Only run date queries if S/E queries yield sparse results (< 10)
+    if totalFoundResults < 10 && len(dateQueries) > 0 {
+        addonLogger.Info("Sparse results (%d) in S/E phases. Running date queries...", totalFoundResults)
+        if err := runSearchPhase(dateQueries); err != nil {
+            addonLogger.Error("Easynews API search (date fallback) failed: %v", err)
+        }
+    }
+
+    // 4. Lazy Gate Fallback: Broad searches (Only if results are still sparse < 10)
     if totalFoundResults < 10 && len(broadQueries) > 0 {
         addonLogger.Info("Sparse results (%d) found. Running broad fallbacks...", totalFoundResults)
         if err := runSearchPhase(broadQueries); err != nil {
@@ -475,7 +493,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
     targetSeason, _ := strconv.Atoi(meta.Season)
     targetEpisode, _ := strconv.Atoi(meta.Episode)
 
-    // 4. Lazy Gate Fallback: Absolute episode fallback for series (Only if results are extremely low < 5)
+    // 5. Lazy Gate Fallback: Absolute episode fallback for series (Only if results are extremely low < 5)
     if contentType == "series" && totalFoundResults < 5 && targetEpisode > 0 {
         addonLogger.Info("Low results (%d) for series '%s'. Running absolute episode fallback...", totalFoundResults, meta.Name)
         var absFallbackQueries []string
