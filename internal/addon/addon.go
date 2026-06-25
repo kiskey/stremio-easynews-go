@@ -347,7 +347,8 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 
     var allSearchResults []searchResult
     var resultsMu sync.Mutex
-    validFileCount := 0 // Tracks files > 500MB for smart early exit
+    totalFoundResults := 0 // Restored to fix compilation error
+    validFileCount := 0    // Tracks files > 500MB for smart early exit
 
     runSearchPhase := func(queries []string) error {
         ctx, cancel := context.WithCancel(context.Background())
@@ -397,6 +398,16 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
                             validFileCount++
                         }
                     }
+
+                    // Update total found results for fallback phase logic
+                    uniqueHashes := make(map[string]struct{})
+                    for _, sr := range allSearchResults {
+                        for _, f := range sr.result.Data {
+                            uniqueHashes[f.GetHash()] = struct{}{}
+                        }
+                    }
+                    totalFoundResults = len(uniqueHashes)
+                    
                     resultsMu.Unlock()
 
                     // If we have 15 valid-sized files, cancel all remaining in-flight searches
