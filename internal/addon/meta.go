@@ -948,7 +948,7 @@ func PublicMetaProvider(id, contentType, preferredLanguage string, enableAltTitl
     parts := strings.Split(id, ":")
     tt := parts[0]
 
-    // Bug A Fix: Use the full episode-scoped `id` for the cache key to prevent air-date collisions
+    // Bug 1 Fix: Use the full episode-scoped `id` for the cache key to prevent air-date collisions
     cacheKey := fmt.Sprintf("%s:%s:%s:%t:%s", id, contentType, preferredLanguage, enableAltTitles, altTitleCountry)
 
     if cached, ok := metaResponseCache.Get(cacheKey); ok {
