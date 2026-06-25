@@ -638,6 +638,18 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
                     continue
                 }
 
+                // Season 1 Year Discrepancy Guardrail (highly robust reboot-proofing)
+                if targetSeason == 1 && meta.Year > 0 && parsedInfo.Year > 0 {
+                    diff := parsedInfo.Year - meta.Year
+                    if diff < 0 {
+                        diff = -diff
+                    }
+                    if diff > 1 {
+                        rejectedTitle++
+                        continue
+                    }
+                }
+
                 if targetEpisode > 0 && isExtraOrSpecial(title) {
                     rejectedTitle++
                     continue
