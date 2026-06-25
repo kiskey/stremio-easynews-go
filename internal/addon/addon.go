@@ -192,7 +192,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
         return StreamHandlerResult{Streams: []Stream{}}, nil
     }
 
-    cacheKey := fmt.Sprintf("%s:v11:user=%s:strict=%s:lang=%s:sort=%s:qualities=%s:maxPerQuality=%s:maxSize=%s:enableAlt=%s:altCountry=%s",
+    cacheKey := fmt.Sprintf("%s:v14:user=%s:strict=%s:lang=%s:sort=%s:qualities=%s:maxPerQuality=%s:maxSize=%s:enableAlt=%s:altCountry=%s",
         id,
         config.Username,
         config.StrictTitleMatching,
@@ -333,7 +333,12 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
         searchConcurrency = 1
     }
     totalMaxResults := shared.ParseIntEnv("TOTAL_MAX_RESULTS", 500)
-    earlyExitThreshold := 20 // Cancel remaining searches once we have 20 unique files to parse
+
+    // Helper to check if a file is likely a valid video (not a sample)
+    isValidSize := func(file api.FileData) bool {
+        // 500MB threshold for movies/series
+        return file.RawSize > 500*1024*1024
+    }
 
     type searchResult struct {
         query  string
@@ -342,10 +347,9 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 
     var allSearchResults []searchResult
     var resultsMu sync.Mutex
-    totalFoundResults := 0
+    validFileCount := 0 // Tracks files > 500MB for smart early exit
 
     runSearchPhase := func(queries []string) error {
-        // Context allows us to cancel in-flight HTTP requests the moment we hit our threshold
         ctx, cancel := context.WithCancel(context.Background())
         defer cancel()
 
@@ -353,7 +357,8 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
         sem := make(chan struct{}, searchConcurrency)
 
         for _, query := range queries {
-            if totalFoundResults >= earlyExitThreshold {
+            // If we have 15 valid-sized files, cancel remaining searches
+            if validFileCount >= 15 {
                 break
             }
 
@@ -372,7 +377,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
                 res, err := easynewsAPI.SearchAll(ctx, opts)
                 if err != nil {
                     if ctx.Err() != nil {
-                        return nil // Suppress error if we intentionally cancelled
+                        return nil 
                     }
                     addonLogger.Error("Easynews Solr search failed for query '%s': %v", query, err)
                     if IsAuthError(err) {
@@ -385,20 +390,18 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
                 if len(res.Data) > 0 {
                     resultsMu.Lock()
                     allSearchResults = append(allSearchResults, searchResult{query: query, result: res})
-
-                    // Update unique hashes immediately for early exit calculation
-                    uniqueHashes := make(map[string]struct{})
-                    for _, sr := range allSearchResults {
-                        for _, f := range sr.result.Data {
-                            uniqueHashes[f.GetHash()] = struct{}{}
+                    
+                    // Count valid sized files for early exit heuristic
+                    for _, f := range res.Data {
+                        if isValidSize(f) {
+                            validFileCount++
                         }
                     }
-                    totalFoundResults = len(uniqueHashes)
                     resultsMu.Unlock()
 
-                    // If we have enough results, cancel all remaining in-flight searches
-                    if totalFoundResults >= earlyExitThreshold {
-                        addonLogger.Info("Early exit triggered: Found %d results, cancelling remaining searches.", totalFoundResults)
+                    // If we have 15 valid-sized files, cancel all remaining in-flight searches
+                    if validFileCount >= 15 {
+                        addonLogger.Info("Early exit triggered: Found %d valid (>500MB) results, cancelling remaining searches.", validFileCount)
                         cancel()
                     }
                 }
@@ -408,7 +411,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 
         if err := g.Wait(); err != nil {
             if ctx.Err() != nil {
-                return nil // Ignore context cancellation errors
+                return nil 
             }
             return err
         }
@@ -648,31 +651,23 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
                 if b.SortMeta == nil {
                     return true
                 }
-
+                
                 aTotal := calculateTotalScore(a.SortMeta)
                 bTotal := calculateTotalScore(b.SortMeta)
                 if aTotal != bTotal {
                     return aTotal > bTotal
                 }
-
+                
                 aScore := 0
                 bScore := 0
-                if a.SortMeta.IsProper {
-                    aScore = 2
-                }
-                if a.SortMeta.IsRepack {
-                    aScore = 1
-                }
-                if b.SortMeta.IsProper {
-                    bScore = 2
-                }
-                if b.SortMeta.IsRepack {
-                    bScore = 1
-                }
+                if a.SortMeta.IsProper { aScore = 2 }
+                if a.SortMeta.IsRepack { aScore = 1 }
+                if b.SortMeta.IsProper { bScore = 2 }
+                if b.SortMeta.IsRepack { bScore = 1 }
                 if aScore != bScore {
                     return aScore > bScore
                 }
-
+                
                 return CompareSizeMeta(a.SortMeta, b.SortMeta) < 0
             }
 
@@ -732,25 +727,17 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
                     if calculateTotalScore(a) != calculateTotalScore(b) {
                         return calculateTotalScore(a) > calculateTotalScore(b)
                     }
-
+                    
                     aScore := 0
                     bScore := 0
-                    if a.IsProper {
-                        aScore = 2
-                    }
-                    if a.IsRepack {
-                        aScore = 1
-                    }
-                    if b.IsProper {
-                        bScore = 2
-                    }
-                    if b.IsRepack {
-                        bScore = 1
-                    }
+                    if a.IsProper { aScore = 2 }
+                    if a.IsRepack { aScore = 1 }
+                    if b.IsProper { bScore = 2 }
+                    if b.IsRepack { bScore = 1 }
                     if aScore != bScore {
                         return aScore > bScore
                     }
-
+                    
                     if a.HasPreferredLang != b.HasPreferredLang {
                         return a.HasPreferredLang
                     }
