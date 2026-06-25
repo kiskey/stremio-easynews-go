@@ -192,7 +192,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
         return StreamHandlerResult{Streams: []Stream{}}, nil
     }
 
-    cacheKey := fmt.Sprintf("%s:v14:user=%s:strict=%s:lang=%s:sort=%s:qualities=%s:maxPerQuality=%s:maxSize=%s:enableAlt=%s:altCountry=%s",
+    cacheKey := fmt.Sprintf("%s:v15:user=%s:strict=%s:lang=%s:sort=%s:qualities=%s:maxPerQuality=%s:maxSize=%s:enableAlt=%s:altCountry=%s",
         id,
         config.Username,
         config.StrictTitleMatching,
@@ -285,47 +285,28 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
         }
     }
 
-    buildQueries := func(withYear bool) []string {
-        var queries []string
-        seen := make(map[string]bool)
-        for _, titleVariant := range allTitles {
-            if strings.TrimSpace(titleVariant) == "" {
-                continue
-            }
-            if !IsLatinString(titleVariant) {
-                continue
-            }
-            m := meta
-            m.Name = titleVariant
-            if !withYear {
-                m.Year = 0
-            }
-            for _, q := range BuildSearchQueryVariants(contentType, m) {
-                if !seen[q] {
-                    seen[q] = true
-                    queries = append(queries, q)
-                }
-            }
-        }
-        return queries
-    }
-
     var primaryQueries []string
     var fallbackQueries []string
 
     if contentType == "movie" {
         if meta.Year > 0 {
             if isMultiWord(meta.Name) {
-                primaryQueries = buildQueries(true)
-                fallbackQueries = buildQueries(false)
+                // Consolidated year-specific grouped query
+                primaryQueries = BuildOptimizedGroupedQueries(contentType, meta, allTitles)
+                
+                // Keep broad title-only fallback query separate
+                mNoYear := meta
+                mNoYear.Year = 0
+                fallbackQueries = BuildOptimizedGroupedQueries(contentType, mNoYear, allTitles)
             } else {
-                primaryQueries = buildQueries(true)
+                // Single-word movie: ONLY search with year to prevent index pollution
+                primaryQueries = BuildOptimizedGroupedQueries(contentType, meta, allTitles)
             }
         } else {
-            primaryQueries = buildQueries(false)
+            primaryQueries = BuildOptimizedGroupedQueries(contentType, meta, allTitles)
         }
     } else if contentType == "series" {
-        primaryQueries = buildQueries(false)
+        primaryQueries = BuildOptimizedGroupedQueries(contentType, meta, allTitles)
     }
 
     searchConcurrency := shared.ParseIntEnv("SEARCH_CONCURRENCY", 5)
@@ -336,7 +317,6 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 
     // Helper to check if a file is likely a valid video (not a sample)
     isValidSize := func(file api.FileData) bool {
-        // 500MB threshold for movies/series
         return file.RawSize > 500*1024*1024
     }
 
@@ -347,8 +327,8 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 
     var allSearchResults []searchResult
     var resultsMu sync.Mutex
-    totalFoundResults := 0 // Restored to fix compilation error
-    validFileCount := 0    // Tracks files > 500MB for smart early exit
+    totalFoundResults := 0
+    validFileCount := 0
 
     runSearchPhase := func(queries []string) error {
         ctx, cancel := context.WithCancel(context.Background())
@@ -358,7 +338,6 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
         sem := make(chan struct{}, searchConcurrency)
 
         for _, query := range queries {
-            // If we have 15 valid-sized files, cancel remaining searches
             if validFileCount >= 15 {
                 break
             }
@@ -392,14 +371,12 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
                     resultsMu.Lock()
                     allSearchResults = append(allSearchResults, searchResult{query: query, result: res})
                     
-                    // Count valid sized files for early exit heuristic
                     for _, f := range res.Data {
                         if isValidSize(f) {
                             validFileCount++
                         }
                     }
 
-                    // Update total found results for fallback phase logic
                     uniqueHashes := make(map[string]struct{})
                     for _, sr := range allSearchResults {
                         for _, f := range sr.result.Data {
@@ -407,10 +384,8 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
                         }
                     }
                     totalFoundResults = len(uniqueHashes)
-                    
                     resultsMu.Unlock()
 
-                    // If we have 15 valid-sized files, cancel all remaining in-flight searches
                     if validFileCount >= 15 {
                         addonLogger.Info("Early exit triggered: Found %d valid (>500MB) results, cancelling remaining searches.", validFileCount)
                         cancel()
@@ -429,6 +404,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
         return nil
     }
 
+    // 1. Primary Phase: Run the optimized grouped queries
     if len(primaryQueries) > 0 {
         if err := runSearchPhase(primaryQueries); err != nil {
             addonLogger.Error("Easynews API search failed with authorization/connection error: %v", err)
@@ -436,8 +412,9 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
         }
     }
 
-    if totalFoundResults < totalMaxResults && len(fallbackQueries) > 0 {
-        addonLogger.Info("Current results (%d) under cap (%d). Executing fallback broad searches...", totalFoundResults, totalMaxResults)
+    // 2. Lazy Gate Fallback 1: Only run broad fallback searches if the primary queries return sparse results (< 15)
+    if totalFoundResults < 15 && len(fallbackQueries) > 0 {
+        addonLogger.Info("Sparse results (%d) found in primary phase. Running broad fallbacks...", totalFoundResults)
         if err := runSearchPhase(fallbackQueries); err != nil {
             addonLogger.Error("Easynews API search (broad fallback) failed: %v", err)
             return authErrorStream(config.UILanguage), nil
@@ -447,8 +424,9 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
     targetSeason, _ := strconv.Atoi(meta.Season)
     targetEpisode, _ := strconv.Atoi(meta.Episode)
 
+    // 3. Lazy Gate Fallback 2: Only run absolute episode fallback for series if results are extremely low (< 5)
     if contentType == "series" && totalFoundResults < 5 && targetEpisode > 0 {
-        addonLogger.Info("Low results (%d) for series '%s'. Running absolute episode fallback search...", totalFoundResults, meta.Name)
+        addonLogger.Info("Low results (%d) for series '%s'. Running absolute episode fallback...", totalFoundResults, meta.Name)
         var absFallbackQueries []string
         for _, titleVariant := range allTitles {
             if strings.TrimSpace(titleVariant) == "" || !IsLatinString(titleVariant) {
@@ -465,14 +443,13 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 
     if contentType == "series" && totalFoundResults < 5 && isMultiWord(meta.Name) {
         addonLogger.Info("Low results (%d) for multi-word series '%s'. Running title-only fallback search...", totalFoundResults, meta.Name)
-        var titleFallbackQueries []string
-        for _, titleVariant := range allTitles {
-            if strings.TrimSpace(titleVariant) == "" || !isMultiWord(titleVariant) || !IsLatinString(titleVariant) {
-                continue
-            }
-            m := MetaProviderResponse{Name: titleVariant}
-            titleFallbackQueries = append(titleFallbackQueries, BuildSearchQuery("movie", m))
-        }
+        
+        mNoEp := meta
+        mNoEp.Season = ""
+        mNoEp.Episode = ""
+        mNoEp.EpisodeAirDate = ""
+        titleFallbackQueries := BuildOptimizedGroupedQueries("series", mNoEp, allTitles)
+        
         if len(titleFallbackQueries) > 0 {
             if err := runSearchPhase(titleFallbackQueries); err != nil {
                 addonLogger.Error("Easynews API search (title-only fallback) failed: %v", err)
