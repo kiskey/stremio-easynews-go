@@ -17,13 +17,14 @@ var (
     animeCrcHashRe = regexp.MustCompile(`(?i)\[[0-9a-f]{8}\]`)
     
     // Standard Western Release Group Regex (incorporating global scene and WEB/P2P labels)
-    westernGroupRe = regexp.MustCompile(`(?i)\b(?:RARBG|NTb|FLUX|CMRG|PHoMo|DLAA|AJP69|KiNGS|GLHF|r00t|TEPES|ROCCaT|EZTV|aXXo|TOMMY|BAE|NOSiViD|BiNGE|SYNCOPY|EDITH|MeGusta|WADU|Kitsune|LoRD|D3G|RBB|PortalGoods)\b`)
+    // NOTE: Removed "Kitsune" (valid anime group) and added major Western scene/P2P encoders
+    westernGroupRe = regexp.MustCompile(`(?i)\b(?:RARBG|NTb|FLUX|CMRG|PHoMo|DLAA|AJP69|KiNGS|GLHF|r00t|TEPES|ROCCaT|EZTV|aXXo|TOMMY|BAE|NOSiViD|BiNGE|SYNCOPY|EDITH|MeGusta|WADU|LoRD|D3G|RBB|PortalGoods|PSA|FWB|FLAME|SAUERKRAUT|higgsboson|ntropic|QxR|Tigole|GalaxyTV)\b`)
     
     // Anime Streaming Platform Indicators
     animeSourceRe = regexp.MustCompile(`(?i)\b(?:CR|Crunchyroll|Bilibili|BILI|iQiyi|MuseAsia|AniOne)\b`)
 
-    // Western Streaming Platform Indicators
-    westernSourceRe = regexp.MustCompile(`(?i)\b(?:NF|Netflix|AMZN|ATVP|DSNP|HMAX|PCOK|PMTP|HULU|STAN|STANAU|SHO|TUBI|BCORE|DSNP|AppleTV|Hulu|Amazon)\b`)
+    // Western Streaming Platform Indicators (added "NFLX" explicitly)
+    westernSourceRe = regexp.MustCompile(`(?i)\b(?:NF|Netflix|NFLX|AMZN|ATVP|DSNP|HMAX|PCOK|PMTP|HULU|STAN|STANAU|SHO|TUBI|BCORE|DSNP|AppleTV|Hulu|Amazon)\b`)
     
     // Live-Action Indicators
     liveActionMarkerRe = regexp.MustCompile(`(?i)\b(?:live[\s._-]?action|LA[\s._-]|netflix[\s._-]?series)\b`)
