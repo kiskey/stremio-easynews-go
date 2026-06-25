@@ -194,10 +194,10 @@ func GetQuality(title string, fallbackResolution string) string {
     return ""
 }
 
-// BuildOptimizedGroupedQueries completely eliminates piped format groups (|) to prevent 
-// Solr operator precedence splitting. It distributes every title-format combination 
-// into separate space-AND queries.
-func BuildOptimizedGroupedQueries(contentType string, meta MetaProviderResponse, allTitles []string) []string {
+// BuildOptimizedGroupedQueries dynamically groups single-word titles using pipes
+// and outputs separate queries for multi-word titles to prevent space-AND conflicts.
+// Bug 2 Fix: Added includeDates flag to adaptively route date queries only when needed.
+func BuildOptimizedGroupedQueries(contentType string, meta MetaProviderResponse, allTitles []string, includeDates bool) []string {
     var safeTitles []string
 
     for _, t := range allTitles {
@@ -228,7 +228,7 @@ func BuildOptimizedGroupedQueries(contentType string, meta MetaProviderResponse,
                 formats = append(formats, fmt.Sprintf("%dx%02d", s, e))
             }
         }
-        if meta.EpisodeAirDate != "" {
+        if includeDates && meta.EpisodeAirDate != "" {
             formats = append(formats, meta.EpisodeAirDate)
             dashDate := strings.ReplaceAll(meta.EpisodeAirDate, ".", "-")
             if dashDate != meta.EpisodeAirDate {
