@@ -557,6 +557,18 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
     rejectedDuplicate := 0
     rejectedTitle := 0
 
+    // Calculate the overall absolute episode number of the request (Fix B)
+    targetAbsoluteEpisode := 0
+    if contentType == "series" && targetSeason > 1 && len(meta.SeasonEpisodeCounts) > 0 {
+        totalPrevEpisodes := 0
+        for s := 1; s < targetSeason; s++ {
+            totalPrevEpisodes += meta.SeasonEpisodeCounts[s]
+        }
+        if totalPrevEpisodes > 0 {
+            targetAbsoluteEpisode = totalPrevEpisodes + targetEpisode
+        }
+    }
+
     for _, sr := range allSearchResults {
         if len(streams) >= totalMaxResults {
             break
@@ -658,10 +670,10 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
                 if targetSeason > 0 && targetEpisode > 0 {
                     isPack, _, _, hasRange := ParsePackOrRange(title, targetEpisode)
 
-                    episodeMatches := parsedInfo.Episode == targetEpisode
+                    episodeMatches := parsedInfo.Episode == targetEpisode || (targetAbsoluteEpisode > 0 && parsedInfo.Episode == targetAbsoluteEpisode)
                     if !episodeMatches && len(parsedInfo.Episodes) > 1 {
                         for _, ep := range parsedInfo.Episodes {
-                            if ep == targetEpisode {
+                            if ep == targetEpisode || (targetAbsoluteEpisode > 0 && ep == targetAbsoluteEpisode) {
                                 episodeMatches = true
                                 break
                             }
