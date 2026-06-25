@@ -221,7 +221,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
         return StreamHandlerResult{Streams: []Stream{}}, nil
     }
 
-    cacheKey := fmt.Sprintf("%s:v17:user=%s:strict=%s:lang=%s:sort=%s:qualities=%s:maxPerQuality=%s:maxSize=%s:enableAlt=%s:altCountry=%s",
+    cacheKey := fmt.Sprintf("%s:v18:user=%s:strict=%s:lang=%s:sort=%s:qualities=%s:maxPerQuality=%s:maxSize=%s:enableAlt=%s:altCountry=%s",
         id,
         config.Username,
         config.StrictTitleMatching,
@@ -282,13 +282,12 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 
     addonLogger.Info("Initiating search for '%s' (type: %s, strict matching: %v, preferred lang: '%s')", meta.Name, contentType, useStrictMatching, preferredLang)
 
-    // Architectural Fix: Restrict Spinoff Pruning to Series content only.
-    // TMDB movie IDs are isolated; alternative titles for a movie ID are strictly
-    // translations of that exact film. Applying spinoff pruning to movies causes
-    // false negatives (e.g., "Dune: Part One" being pruned from "Dune").
+    // Architectural Fix: Keep allTitles intact for local matching
     allTitles := []string{meta.Name}
     if meta.AlternativeNames != nil {
         for _, alt := range meta.AlternativeNames {
+            // Apply spinoff filter only for series content. Movie alternative titles 
+            // from TMDB are safe because movies are ID-isolated (no seasons/specials).
             if contentType == "series" && isSpinoff(alt, meta.Name) {
                 continue
             }
@@ -322,16 +321,18 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
         }
     }
 
-    // Restrict maximum number of alternative titles sent to the Solr API to top 2 pruned names
-    if len(allTitles) > 3 {
-        allTitles = allTitles[:3] // 1 primary + 2 alts
+    // Architectural Fix: Create a separate searchTitles array strictly for Solr queries, capped at 3.
+    searchTitles := make([]string, len(allTitles))
+    copy(searchTitles, allTitles)
+    if len(searchTitles) > 3 {
+        searchTitles = searchTitles[:3] // 1 primary + 2 alts
     }
 
     // Split primary and alternative titles for Cascade Gating
     primaryTitles := []string{meta.Name}
     altTitles := []string{}
-    if len(allTitles) > 1 {
-        altTitles = allTitles[1:]
+    if len(searchTitles) > 1 {
+        altTitles = searchTitles[1:]
     }
 
     // Primary Phase (Fast Path): ONLY primary title
@@ -346,7 +347,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
     mNoYear.Season = ""
     mNoYear.Episode = ""
     mNoYear.EpisodeAirDate = ""
-    broadQueries := BuildOptimizedGroupedQueries(contentType, mNoYear, allTitles)
+    broadQueries := BuildOptimizedGroupedQueries(contentType, mNoYear, searchTitles)
 
     searchConcurrency := shared.ParseIntEnv("SEARCH_CONCURRENCY", 5)
     if searchConcurrency < 1 {
@@ -478,7 +479,8 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
     if contentType == "series" && totalFoundResults < 5 && targetEpisode > 0 {
         addonLogger.Info("Low results (%d) for series '%s'. Running absolute episode fallback...", totalFoundResults, meta.Name)
         var absFallbackQueries []string
-        for _, titleVariant := range allTitles {
+        // Architectural Fix: Use searchTitles (capped at 3) to prevent query explosion
+        for _, titleVariant := range searchTitles {
             if strings.TrimSpace(titleVariant) == "" || !IsLatinString(titleVariant) {
                 continue
             }
@@ -536,6 +538,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 
             if contentType == "series" {
                 matched := false
+                // Local matching uses the full allTitles array (untruncated)
                 for _, tv := range allTitles {
                     if MatchesTitle(title, tv, useStrictMatching) {
                         matched = true
@@ -585,6 +588,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 
             if contentType == "movie" {
                 matched := false
+                // Local matching uses the full allTitles array (untruncated)
                 for _, tv := range allTitles {
                     if MatchesTitle(title, tv, useStrictMatching) {
                         matched = true
