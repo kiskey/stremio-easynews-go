@@ -1,7 +1,6 @@
 package addon
 
 import (
-    "math"
     "regexp"
     "strings"
     "time"
