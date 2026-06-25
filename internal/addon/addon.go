@@ -1213,9 +1213,10 @@ func contains(slice []string, item string) bool {
 }
 
 func SanitizeFilenameForStremio(filename string) string {
-    // Replace spaces and toxic brackets/symbols with periods
+    // Replace spaces, commas, and toxic brackets/symbols with periods or empty strings
     r := strings.NewReplacer(
         " ", ".",
+        ",", ".", // Safely convert commas to periods to prevent HTTP header/URL conflicts [8]
         "(", "",
         ")", "",
         "[", "",
@@ -1226,7 +1227,7 @@ func SanitizeFilenameForStremio(filename string) string {
     )
     sanitized := r.Replace(filename)
     
-    // De-duplicate double periods (e.g. ".." -> ".")
+    // De-duplicate double periods (e.g. ".." or ",." -> ".")
     for strings.Contains(sanitized, "..") {
         sanitized = strings.ReplaceAll(sanitized, "..", ".")
     }
