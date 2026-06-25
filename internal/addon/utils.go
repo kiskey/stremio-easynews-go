@@ -195,7 +195,7 @@ func GetQuality(title string, fallbackResolution string) string {
 }
 
 // BuildOptimizedGroupedQueries dynamically groups single-word titles using pipes
-// and outputs separate queries for multi-word titles to prevent space-AND conflicts.
+// and distributes multi-word titles over each format to prevent space-AND conflicts.
 func BuildOptimizedGroupedQueries(contentType string, meta MetaProviderResponse, allTitles []string) []string {
     var singleWords []string
     var multiWords []string
@@ -217,15 +217,14 @@ func BuildOptimizedGroupedQueries(contentType string, meta MetaProviderResponse,
         }
     }
 
-    var formatGroup string
+    var formats []string
     exclusions := " !sample !trailer !passwd !password !preview"
 
     if contentType == "movie" {
         if meta.Year > 0 {
-            formatGroup = strconv.Itoa(meta.Year)
+            formats = append(formats, strconv.Itoa(meta.Year))
         }
     } else if contentType == "series" {
-        var formats []string
         if meta.Season != "" && meta.Episode != "" {
             s, _ := strconv.Atoi(meta.Season)
             e, _ := strconv.Atoi(meta.Episode)
@@ -241,25 +240,27 @@ func BuildOptimizedGroupedQueries(contentType string, meta MetaProviderResponse,
                 formats = append(formats, dashDate)
             }
         }
-        if len(formats) > 0 {
-            formatGroup = strings.Join(formats, "|")
-        }
     }
 
     var queries []string
 
+    // 1. Single-word Group: Group all single-word alternative titles with pipes
     if len(singleWords) > 0 {
         singleGroup := strings.Join(singleWords, "|")
-        if formatGroup != "" {
+        if len(formats) > 0 {
+            formatGroup := strings.Join(formats, "|")
             queries = append(queries, fmt.Sprintf("%s %s%s", singleGroup, formatGroup, exclusions))
         } else {
             queries = append(queries, singleGroup+exclusions)
         }
     }
 
+    // 2. Multi-word Phrases: Distribute over each format to prevent Solr precedence splitting
     for _, mw := range multiWords {
-        if formatGroup != "" {
-            queries = append(queries, fmt.Sprintf("%s %s%s", mw, formatGroup, exclusions))
+        if len(formats) > 0 {
+            for _, f := range formats {
+                queries = append(queries, fmt.Sprintf("%s %s%s", mw, f, exclusions))
+            }
         } else {
             queries = append(queries, mw+exclusions)
         }
