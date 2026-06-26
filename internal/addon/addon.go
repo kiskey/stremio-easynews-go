@@ -16,6 +16,7 @@ import (
     "github.com/kiskey/stremio-easynews-go/internal/api"
     "github.com/kiskey/stremio-easynews-go/internal/i18n"
     "github.com/kiskey/stremio-easynews-go/internal/shared"
+    "github.com/kiskey/stremio-easynews-go/internal/seal"
     "golang.org/x/sync/errgroup"
 )
 
