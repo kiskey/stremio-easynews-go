@@ -13,6 +13,7 @@ import (
     "github.com/kiskey/stremio-easynews-go/internal/addon"
     "github.com/kiskey/stremio-easynews-go/internal/i18n"
     "github.com/kiskey/stremio-easynews-go/internal/resolve"
+    "github.com/kiskey/stremio-easynews-go/internal/seal" // NEW: imported seal package
     "github.com/kiskey/stremio-easynews-go/internal/shared"
 )
 
@@ -28,6 +29,14 @@ func ServeHTTP(port int) {
     if os.Getenv("EASYNEWS_LOG_LEVEL") != "debug" && os.Getenv("EASYNEWS_LOG_LEVEL") != "silly" {
         gin.SetMode(gin.ReleaseMode)
     }
+
+    // === NEW: Initialize encryption module ===
+    if err := seal.Init(); err != nil {
+        serverLogger.Warn("Seal initialization skipped: %v (falling back to legacy config mode)", err)
+    } else {
+        serverLogger.Info("Config encryption enabled (AES-256-GCM)")
+    }
+    // === END NEW ===
 
     r := gin.New()
     r.Use(gin.Recovery())                       // Protects the master daemon from crashing on runtime exceptions
@@ -49,6 +58,32 @@ func ServeHTTP(port int) {
     // -----------------------------------------------------------------------
     // Stremio Protocol Gateway Routes
     // -----------------------------------------------------------------------
+
+    // === NEW: Encrypted config mint endpoint ===
+    // Called once by the configure page at install time to generate the encrypted URL slug.
+    r.POST("/api/config/seal", func(c *gin.Context) {
+        if !seal.Enabled() {
+            c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Encryption is not enabled on the server"})
+            return
+        }
+        var cfg addon.AddonConfig
+        if err := c.ShouldBindJSON(&cfg); err != nil {
+            c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid config payload"})
+            return
+        }
+        if cfg.Username == "" || cfg.Password == "" {
+            c.JSON(http.StatusBadRequest, gin.H{"error": "Username and password are required"})
+            return
+        }
+        tok, err := seal.SealConfig(cfg)
+        if err != nil {
+            serverLogger.Error("Failed to seal config: %v", err)
+            c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to encrypt configuration"})
+            return
+        }
+        c.JSON(http.StatusOK, gin.H{"token": tok})
+    })
+    // === END NEW ===
 
     // Default unconfigured manifest endpoint (forces setup workflow)
     r.GET("/manifest.json", func(c *gin.Context) {
