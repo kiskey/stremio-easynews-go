@@ -253,6 +253,19 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
         return StreamHandlerResult{Streams: []Stream{}}, nil
     }
 
+    // Tier 2: Instantiate API client early to access credentials fingerprint fast
+    easynewsAPI, err := api.NewEasynewsAPI(config.Username, config.Password)
+    if err != nil {
+        addonLogger.Error("EasynewsAPI instantiation failed: %v", err)
+        return authErrorStream(config.UILanguage), nil
+    }
+
+    // Fast fail-fast circuit-breaker short circuit (CPU check under 1µs)
+    if api.IsCredentialsInvalid(easynewsAPI.GetCredKey()) {
+        addonLogger.Warn("Short-circuiting stream handler: cached credentials invalid for user: %s", config.Username)
+        return authErrorStream(config.UILanguage), nil
+    }
+
     cacheKey := fmt.Sprintf("%s:v25:user=%s:strict=%s:lang=%s:sort=%s:qualities=%s:maxPerQuality=%s:maxSize=%s:enableAlt=%s:altCountry=%s",
         id,
         config.Username,
@@ -298,12 +311,6 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
     maxFileSizeGB := 0.0
     if v, err := strconv.ParseFloat(config.MaxFileSize, 64); err == nil && v > 0 {
         maxFileSizeGB = v
-    }
-
-    easynewsAPI, err := api.NewEasynewsAPI(config.Username, config.Password)
-    if err != nil {
-        addonLogger.Error("EasynewsAPI instantiation failed: %v", err)
-        return authErrorStream(config.UILanguage), nil
     }
 
     meta, err := PublicMetaProvider(id, contentType, preferredLang, enableAltTitles, config.AltTitleCountry)
@@ -1180,7 +1187,7 @@ func MapStream(duration, size, fullResolution, title, fileExtension string, vide
 
     bh := &BehaviorHints{
         NotWebReady: true,
-        Filename:    title + fileExtension,
+        Filename:    SanitizeFilenameForStremio(title + fileExtension),
         BingeGroup:  bingeGroup,
     }
     if videoSize > 0 {
@@ -1210,4 +1217,39 @@ func contains(slice []string, item string) bool {
         }
     }
     return false
+}
+
+func SanitizeFilenameForStremio(filename string) string {
+    // Replace spaces and toxic brackets/symbols with periods
+    r := strings.NewReplacer(
+        " ", ".",
+        ",", ".", // Safely convert commas to periods to prevent HTTP header/URL conflicts [8]
+        "(", "",
+        ")", "",
+        "[", "",
+        "]", "",
+        "{", "",  // Curly braces (extremely common in P2P/TamilMV)
+        "}", "",
+        "&", "and", // Ampersand
+        "+", ".", // Plus sign
+        ";", ".", // Semicolon
+        "\"", "", // Double quotes
+        "'", "",  // Single quote
+        ":", ".",
+        "-", ".",
+        "_", ".",
+        "/", ".", // Slashes (breaks routing)
+        "\\", ".",
+        "?", "",  // Question mark (breaks query strings)
+        "%", "",  // Percent sign (breaks URI decoding)
+        "=", ".", // Equal sign
+    )
+    sanitized := r.Replace(filename)
+    
+    // De-duplicate double periods (e.g. ".." -> ".")
+    for strings.Contains(sanitized, "..") {
+        sanitized = strings.ReplaceAll(sanitized, "..", ".")
+    }
+    
+    return strings.Trim(sanitized, ".")
 }

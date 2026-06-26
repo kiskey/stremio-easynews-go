@@ -48,6 +48,40 @@ type cacheEntry struct {
 }
 
 // ---------------------------------------------------------------------------
+// Tier 1: Temporary Invalid Authentication Circuit Breaker Registry
+// ---------------------------------------------------------------------------
+
+var (
+    invalidAuthRegistry   = make(map[string]int64) // fingerprint -> expiresAt (UnixNano)
+    invalidAuthRegistryMu sync.RWMutex
+    authFailureTTL        = time.Duration(shared.ParseIntEnv("AUTH_FAILURE_TTL_SECONDS", 3600)) * time.Second
+)
+
+// RegisterInvalidCredentials flags a credential fingerprint as temporarily invalid.
+func RegisterInvalidCredentials(fingerprint string) {
+    invalidAuthRegistryMu.Lock()
+    defer invalidAuthRegistryMu.Unlock()
+    invalidAuthRegistry[fingerprint] = time.Now().Add(authFailureTTL).UnixNano()
+}
+
+// IsCredentialsInvalid checks if the fingerprint is currently locked out as invalid.
+func IsCredentialsInvalid(fingerprint string) bool {
+    invalidAuthRegistryMu.RLock()
+    expiresAt, exists := invalidAuthRegistry[fingerprint]
+    invalidAuthRegistryMu.RUnlock()
+    if !exists {
+        return false
+    }
+    if time.Now().UnixNano() > expiresAt {
+        invalidAuthRegistryMu.Lock()
+        delete(invalidAuthRegistry, fingerprint)
+        invalidAuthRegistryMu.Unlock()
+        return false
+    }
+    return true
+}
+
+// ---------------------------------------------------------------------------
 // EasynewsAPI Client Definition
 // ---------------------------------------------------------------------------
 
@@ -74,6 +108,11 @@ func NewEasynewsAPI(username, password string) (*EasynewsAPI, error) {
             Transport: sharedTransport, // Reuses global TCP pool
         },
     }, nil
+}
+
+// GetCredKey returns the unique credentials fingerprint for this API instance.
+func (api *EasynewsAPI) GetCredKey() string {
+    return api.credKey
 }
 
 // credFingerprint computes an FNV-1a hash representing credentials to safely scope the cache.
@@ -163,6 +202,11 @@ func (api *EasynewsAPI) setCache(key string, data EasynewsSearchResponse) {
 // Search queries a single advanced page of results from Easynews.
 // Context is used to cancel in-flight requests during early exit.
 func (api *EasynewsAPI) Search(ctx context.Context, opts SearchOptions) (EasynewsSearchResponse, error) {
+    // Early circuit-breaker short-circuit check
+    if IsCredentialsInvalid(api.credKey) {
+        return EasynewsSearchResponse{}, fmt.Errorf("authentication failed: cached credentials invalid")
+    }
+
     if opts.Query == "" {
         return EasynewsSearchResponse{}, fmt.Errorf("query parameter is required")
     }
@@ -247,6 +291,7 @@ func (api *EasynewsAPI) Search(ctx context.Context, opts SearchOptions) (Easynew
 
     if resp.StatusCode == http.StatusUnauthorized {
         apiLogger.Error("Solr: Request returned 401 Unauthorized for user: %s", api.username)
+        RegisterInvalidCredentials(api.credKey) // Mark invalid
         return EasynewsSearchResponse{}, fmt.Errorf("authentication failed: invalid username or password")
     }
     if resp.StatusCode != http.StatusOK {
