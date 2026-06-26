@@ -85,10 +85,14 @@ func Open(tok string) ([]byte, error) {
     if !IsSealed(tok) {
         return nil, errors.New("not a sealed token")
     }
+    // Ensure string has enough length to contain prefix + keyID + dot + payload
     if len(tok) <= len(prefix)+1 || tok[len(prefix)] != keyID {
         return nil, errors.New("unsupported keyID")
     }
-    body := tok[len(prefix)+1:]
+    
+    // FIXED: Slice off "enc." (4) + "1" (1) + "." (1) = 6 characters
+    body := tok[len(prefix)+2:]
+    
     if len(body) == 0 {
         return nil, errors.New("empty token body")
     }
