@@ -7,6 +7,7 @@ import (
     "encoding/base64"
     "errors"
     "os"
+    "strings"
     "sync"
 
     "github.com/bytedance/sonic"
@@ -26,7 +27,6 @@ var (
 )
 
 // Init initializes the AES cipher block using the ADDON_CONFIG_KEY environment variable.
-// It is safe to call multiple times.
 func Init() error {
     once.Do(func() {
         b64 := os.Getenv("ADDON_CONFIG_KEY")
@@ -59,7 +59,7 @@ func Enabled() bool { return aead != nil }
 
 // IsSealed checks if a string contains the encrypted token prefix.
 func IsSealed(s string) bool {
-    return len(s) > len(prefix) && s[0] == 'e' && s[:len(prefix)] == prefix
+    return strings.HasPrefix(s, prefix)
 }
 
 // Seal encrypts plaintext and returns "enc.<keyID>.<base64url(nonce||ct||tag)>".
@@ -85,13 +85,17 @@ func Open(tok string) ([]byte, error) {
     if !IsSealed(tok) {
         return nil, errors.New("not a sealed token")
     }
-    // Ensure string has enough length to contain prefix + keyID + dot + payload
-    if len(tok) <= len(prefix)+1 || tok[len(prefix)] != keyID {
-        return nil, errors.New("unsupported keyID")
-    }
     
-    // FIXED: Slice off "enc." (4) + "1" (1) + "." (1) = 6 characters
-    body := tok[len(prefix)+2:]
+    // Safely extract the base64 payload using string splitting to avoid any index math errors.
+    // Expected format: "enc.1.<payload>"
+    parts := strings.SplitN(tok, ".", 3)
+    if len(parts) != 3 {
+        return nil, errors.New("invalid token format")
+    }
+    if parts[0] != "enc" || parts[1] != string(keyID) {
+        return nil, errors.New("unsupported keyID or prefix")
+    }
+    body := parts[2]
     
     if len(body) == 0 {
         return nil, errors.New("empty token body")
