@@ -75,6 +75,7 @@ In Alpine Linux, service-specific variables must reside in `/etc/conf.d/stremio-
    # Optional TMDB API Key for dynamic alternative titles and localized translations
    TMDB_API_KEY=your_tmdb_api_key_here
 
+   ADDON_CONFIG_KEY="base64 32length key"              #use in linux shell  "openssl rand -base64 32" paste that value #if not key set, the addon would use plaintext user/pass in the url
    # Search Limits
    TOTAL_MAX_RESULTS=500
    MAX_RESULTS_PER_PAGE=250
