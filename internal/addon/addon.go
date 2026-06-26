@@ -16,6 +16,7 @@ import (
     "github.com/kiskey/stremio-easynews-go/internal/api"
     "github.com/kiskey/stremio-easynews-go/internal/i18n"
     "github.com/kiskey/stremio-easynews-go/internal/shared"
+    "github.com/kiskey/stremio-easynews-go/internal/seal"
     "golang.org/x/sync/errgroup"
 )
 
@@ -57,6 +58,18 @@ func ParseConfig(configStr string) AddonConfig {
     if configStr == "" {
         return config
     }
+
+    // === NEW: Encrypted token fast path (< 1 µs) ===
+    if seal.IsSealed(configStr) {
+        var sealedConfig AddonConfig
+        if err := seal.OpenConfig(configStr, &sealedConfig); err == nil {
+            return sealedConfig
+        } else {
+            // EXPLICIT ERROR LOGGING: If it fails, we will know exactly why
+            addonLogger.Error("Failed to decrypt sealed config: %v", err)
+        }
+    }
+    // === END NEW ===
 
     if decodedStr, err := url.QueryUnescape(configStr); err == nil {
         if strings.HasPrefix(decodedStr, "{") && strings.HasSuffix(decodedStr, "}") {
