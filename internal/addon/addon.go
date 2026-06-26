@@ -58,6 +58,18 @@ func ParseConfig(configStr string) AddonConfig {
         return config
     }
 
+    // === NEW: Encrypted token fast path (< 1 µs) ===
+    if seal.IsSealed(configStr) {
+        var sealedConfig AddonConfig
+        if err := seal.OpenConfig(configStr, &sealedConfig); err == nil {
+            return sealedConfig
+        } else {
+            // EXPLICIT ERROR LOGGING: If it fails, we will know exactly why
+            addonLogger.Error("Failed to decrypt sealed config: %v", err)
+        }
+    }
+    // === END NEW ===
+
     if decodedStr, err := url.QueryUnescape(configStr); err == nil {
         if strings.HasPrefix(decodedStr, "{") && strings.HasSuffix(decodedStr, "}") {
             var jsonConfig AddonConfig
