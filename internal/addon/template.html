@@ -303,7 +303,8 @@
             window.location.href = url.toString();
         }
 
-        function getConfiguration() {
+        // Gathers the form data into an object
+        function getConfigObject() {
             const config = {};
             const keys = [
                 'uiLanguage', 'username', 'password', 'strictTitleMatching', 
@@ -322,31 +323,56 @@
                     config[key] = element.value;
                 }
             });
+            return config;
+        }
 
+        // Falls back to legacy plaintext string assembly if encryption API is offline
+        function getLegacyConfigString() {
+            const config = getConfigObject();
             const params = new URLSearchParams();
             Object.entries(config).forEach(([k, v]) => {
                 if (v !== '') {
                     params.append(k, v);
                 }
             });
-
             return params.toString();
         }
 
-        function buildManifestURL() {
-            const configString = getConfiguration();
+        // Generates the manifest URL, attempting encryption first
+        async function buildManifestURL() {
+            const cfg = getConfigObject();
             const secureHost = window.location.protocol + '//' + window.location.host;
-            return secureHost + '/' + configString + '/manifest.json';
+            
+            try {
+                const res = await fetch(`${secureHost}/api/config/seal`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(cfg)
+                });
+
+                if (res.ok) {
+                    const data = await res.json();
+                    return `${secureHost}/${data.token}/manifest.json`;
+                } else {
+                    // Fallback if server returns error (e.g. encryption not configured)
+                    console.warn("Seal API failed, falling back to plaintext config.");
+                    return `${secureHost}/${getLegacyConfigString()}/manifest.json`;
+                }
+            } catch (err) {
+                // Network error fallback
+                console.error("Seal API error, falling back to plaintext:", err);
+                return `${secureHost}/${getLegacyConfigString()}/manifest.json`;
+            }
         }
 
-        function installAddon() {
-            const manifestURL = buildManifestURL();
+        async function installAddon() {
+            const manifestURL = await buildManifestURL();
             const stremioURL = manifestURL.replace(/^http/, 'stremio');
             window.location.href = stremioURL;
         }
 
-        function copyConfiguration() {
-            const manifestURL = buildManifestURL();
+        async function copyConfiguration() {
+            const manifestURL = await buildManifestURL();
             navigator.clipboard.writeText(manifestURL).then(() => {
                 const toast = document.getElementById('toast');
                 toast.classList.add('show');
