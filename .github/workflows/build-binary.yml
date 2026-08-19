@@ -4,11 +4,13 @@ on:
   push:
     branches:
       - main
+      - enhance1.0
     tags:
       - 'v*'
   pull_request:
     branches:
       - main
+      - enhance1.0
   workflow_dispatch:
 
 permissions:
@@ -16,7 +18,7 @@ permissions:
 
 jobs:
   build:
-    name: Compile Statically Linked Alpine Binary
+    name: Verify and Compile Statically Linked Alpine Binary
     runs-on: ubuntu-latest
     steps:
       - name: Check out Source Code
@@ -30,33 +32,55 @@ jobs:
 
       - name: Patch Dependency Go Version
         run: |
-          # Clone the dependency and fix the fake go 1.25 requirement
+          set -euo pipefail
           git clone https://github.com/ovrlord-app/releasetitleparser /tmp/rtp
           cd /tmp/rtp
-          # Checkout the specific commit that go.mod was using
           git checkout 4c9e25386576
-          # Fix the go version in go.mod
           sed -i 's/go 1.25/go 1.22/g' go.mod
-          # If go.mod doesn't exist or is empty, create a basic one
           if [ ! -f go.mod ] || [ ! -s go.mod ]; then
-            echo "module github.com/ovrlord-app/releasetitleparser" > go.mod
-            echo "go 1.22" >> go.mod
+            {
+              echo "module github.com/ovrlord-app/releasetitleparser"
+              echo "go 1.22"
+            } > go.mod
           fi
-          cd -
-          # Add replace directive to use the patched local copy
+          cd "${GITHUB_WORKSPACE}"
           go mod edit -replace github.com/ovrlord-app/releasetitleparser=/tmp/rtp
 
-      - name: Tidy Go Modules
+      - name: Resolve and Verify Go Modules
         run: |
+          set -euo pipefail
           go mod tidy
+          go mod verify
+
+      - name: Report Go Formatting
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "${unformatted}" ]; then
+            echo "Existing Go files that are not gofmt formatted:"
+            echo "${unformatted}"
+          else
+            echo "All Go files are gofmt formatted."
+          fi
+
+      - name: Run Go Vet
+        run: go vet ./...
+
+      - name: Run Unit Tests
+        run: go test -count=1 ./...
+
+      - name: Run Race Detector
+        env:
+          CGO_ENABLED: 1
+        run: go test -race -count=1 ./...
 
       - name: Extract Release Version
         id: vars
+        shell: bash
         run: |
           if [[ "${{ github.ref_type }}" == "tag" ]]; then
-            echo "VERSION=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+            echo "VERSION=${{ github.ref_name }}" >> "${GITHUB_OUTPUT}"
           else
-            echo "VERSION=${{ github.sha }}" >> $GITHUB_OUTPUT
+            echo "VERSION=${{ github.sha }}" >> "${GITHUB_OUTPUT}"
           fi
 
       - name: Compile Go Executable (Linux AMD64)
@@ -65,7 +89,13 @@ jobs:
           GOOS: linux
           GOARCH: amd64
         run: |
-          go build -trimpath -ldflags="-s -w -X github.com/kiskey/stremio-easynews-go/internal/shared.Version=${{ steps.vars.outputs.VERSION }}" -o bin/stremio-easynews-linux-amd64 cmd/addon/main.go
+          set -euo pipefail
+          mkdir -p bin
+          go build \
+            -trimpath \
+            -ldflags="-s -w -X github.com/kiskey/stremio-easynews-go/internal/shared.Version=${{ steps.vars.outputs.VERSION }}" \
+            -o bin/stremio-easynews-linux-amd64 \
+            cmd/addon/main.go
 
       - name: Upload Binary Artifact
         uses: actions/upload-artifact@v4
