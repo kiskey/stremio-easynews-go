@@ -118,7 +118,9 @@ func (c *BoundedCache[K, V]) Set(key K, value V) {
 }
 
 type tmdbDetails struct {
+	DisplayTitle        string
 	OriginalTitle       string
+	Year                int
 	OriginCountry       []string
 	IsAnimation         bool
 	SeasonEpisodeCounts map[int]int
@@ -471,10 +473,17 @@ func getTMDBDetails(imdbID string) tmdbDetails {
 		}
 
 		var details struct {
-			OriginalTitle string   `json:"original_title"`
-			OriginalName  string   `json:"original_name"`
-			OriginCountry []string `json:"origin_country"`
-			Genres        []struct {
+			Title               string   `json:"title"`
+			Name                string   `json:"name"`
+			OriginalTitle       string   `json:"original_title"`
+			OriginalName        string   `json:"original_name"`
+			ReleaseDate         string   `json:"release_date"`
+			FirstAirDate        string   `json:"first_air_date"`
+			OriginCountry       []string `json:"origin_country"`
+			ProductionCountries []struct {
+				ISO3166_1 string `json:"iso_3166_1"`
+			} `json:"production_countries"`
+			Genres []struct {
 				ID int `json:"id"`
 			} `json:"genres"`
 			Seasons []struct {
@@ -486,9 +495,31 @@ func getTMDBDetails(imdbID string) tmdbDetails {
 			return tmdbDetails{}, err
 		}
 
-		title := details.OriginalTitle
-		if title == "" {
-			title = details.OriginalName
+		displayTitle := strings.TrimSpace(details.Title)
+		if displayTitle == "" {
+			displayTitle = strings.TrimSpace(details.Name)
+		}
+		originalTitle := strings.TrimSpace(details.OriginalTitle)
+		if originalTitle == "" {
+			originalTitle = strings.TrimSpace(details.OriginalName)
+		}
+		if originalTitle == "" {
+			originalTitle = displayTitle
+		}
+
+		year := yearFromISODate(details.ReleaseDate)
+		if year == 0 {
+			year = yearFromISODate(details.FirstAirDate)
+		}
+
+		originCountries := append([]string(nil), details.OriginCountry...)
+		if len(originCountries) == 0 {
+			for _, country := range details.ProductionCountries {
+				code := strings.TrimSpace(country.ISO3166_1)
+				if code != "" {
+					originCountries = append(originCountries, code)
+				}
+			}
 		}
 
 		isAnimation := false
@@ -500,13 +531,15 @@ func getTMDBDetails(imdbID string) tmdbDetails {
 		}
 
 		counts := make(map[int]int)
-		for _, s := range details.Seasons {
-			counts[s.SeasonNumber] = s.EpisodeCount
+		for _, season := range details.Seasons {
+			counts[season.SeasonNumber] = season.EpisodeCount
 		}
 
 		val := tmdbDetails{
-			OriginalTitle:       title,
-			OriginCountry:       details.OriginCountry,
+			DisplayTitle:        displayTitle,
+			OriginalTitle:       originalTitle,
+			Year:                year,
+			OriginCountry:       originCountries,
 			IsAnimation:         isAnimation,
 			SeasonEpisodeCounts: counts,
 		}
@@ -1129,21 +1162,14 @@ func cinemetaMetaProvider(id, contentType, preferredLanguage string, enableAltTi
 }
 
 func PublicMetaProvider(id, contentType, preferredLanguage string, enableAltTitles bool, altTitleCountry string) (MetaProviderResponse, error) {
-	parts := strings.Split(id, ":")
-	tt := parts[0]
+	tt, season, episode := splitMetadataID(id)
 
-	// Use the full episode-scoped id for the cache key to prevent air-date collisions.
-	cacheKey := fmt.Sprintf("%s:%s:%s:%t:%s", id, contentType, preferredLanguage, enableAltTitles, altTitleCountry)
+	// The metadata schema/version is part of the key so provider-priority changes
+	// cannot reuse stale in-process entries created by an older projection.
+	cacheKey := fmt.Sprintf("%s:%s:%s:%s:%t:%s", canonicalMetadataVersion, id, contentType, preferredLanguage, enableAltTitles, altTitleCountry)
 
 	if cached, ok := metaResponseCache.Get(cacheKey); ok {
-		metaLogger.Info("Meta Cache HIT for core key '%s'", tt)
-		var season, episode string
-		if len(parts) > 1 {
-			season = parts[1]
-		}
-		if len(parts) > 2 {
-			episode = parts[2]
-		}
+		metaLogger.Info("Meta Cache HIT for core key '%s' (source=%s)", tt, cached.MetadataSource)
 		cached.Season = season
 		cached.Episode = episode
 		return cached, nil
@@ -1154,23 +1180,21 @@ func PublicMetaProvider(id, contentType, preferredLanguage string, enableAltTitl
 			return cached, nil
 		}
 
-		metaLogger.Info("Meta Cache MISS: Resolving fresh metadata for core key '%s'", tt)
+		metaLogger.Info("Meta Cache MISS: Resolving canonical metadata for core key '%s'", tt)
 
-		meta, err := imdbMetaProvider(id, preferredLanguage, enableAltTitles, altTitleCountry)
-		if err == nil && meta.Name != "" {
-			metaResponseCache.Set(cacheKey, meta)
-			return meta, nil
+		canonical, err := resolveCanonicalMetadata(id, contentType, preferredLanguage, enableAltTitles, altTitleCountry)
+		if err != nil {
+			return MetaProviderResponse{}, fmt.Errorf("failed to find metadata for %s: %w", id, err)
+		}
+		projected := canonical.toMetaProviderResponse()
+		if projected.Name == "" {
+			return MetaProviderResponse{}, fmt.Errorf("failed to find metadata for %s: empty canonical title", id)
 		}
 
-		metaLogger.Debug("IMDb metadata lookup failed, falling back to Cinemeta: %v", err)
-
-		meta, err = cinemetaMetaProvider(id, contentType, preferredLanguage, enableAltTitles, altTitleCountry)
-		if err == nil && meta.Name != "" {
-			metaResponseCache.Set(cacheKey, meta)
-			return meta, nil
-		}
-
-		return MetaProviderResponse{}, fmt.Errorf("failed to find metadata for %s", id)
+		metaResponseCache.Set(cacheKey, projected)
+		metaLogger.Info("Meta: Canonical metadata resolved for '%s' via %s (confidence=%.2f, variants=%d)",
+			tt, projected.MetadataSource, projected.MetadataConfidence, len(projected.TitleVariants))
+		return projected, nil
 	})
 
 	if err != nil {
@@ -1178,15 +1202,7 @@ func PublicMetaProvider(id, contentType, preferredLanguage string, enableAltTitl
 	}
 
 	finalMeta := res.(MetaProviderResponse)
-	var season, episode string
-	if len(parts) > 1 {
-		season = parts[1]
-	}
-	if len(parts) > 2 {
-		episode = parts[2]
-	}
 	finalMeta.Season = season
 	finalMeta.Episode = episode
-
 	return finalMeta, nil
 }
