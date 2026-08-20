@@ -4,12 +4,12 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"math"
 	"net/url"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -416,13 +416,19 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 	}
 	totalMaxResults := shared.ParseIntEnv("TOTAL_MAX_RESULTS", 500)
 
-	// Anime & Legacy SD File Size Protection
+	// Anime & Legacy SD File Size Protection. This remains an early-exit
+	// confidence input only; final stream eligibility keeps the legacy 20MB
+	// IsBadVideo floor so existing playable-result behavior is preserved.
 	minValidSize := int64(80 * 1024 * 1024) // 80MB for series
 	if contentType == "movie" {
 		minValidSize = int64(300 * 1024 * 1024) // 300MB for movies
 	}
-	isValidSize := func(file api.FileData) bool {
-		return file.RawSize >= minValidSize
+
+	matchContext := newCandidateMatchContext(contentType, meta, allTitles, useStrictMatching, minValidSize)
+	targetEpisode := matchContext.TargetEpisode
+	earlyExitTarget := shared.ParseIntEnv("EARLY_EXIT_CANDIDATES", 15)
+	if earlyExitTarget < 1 {
+		earlyExitTarget = 15
 	}
 
 	type searchResult struct {
@@ -432,8 +438,11 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 
 	var allSearchResults []searchResult
 	var resultsMu sync.Mutex
-	totalFoundResults := 0
-	validFileCount := 0
+	discoveredHashes := make(map[string]struct{})
+	prevalidatedHashes := make(map[string]struct{})
+	candidateEvaluations := make(map[string]CandidateEvaluation)
+	var totalFoundResults atomic.Int64
+	var prevalidatedCandidateCount atomic.Int64
 
 	runSearchPhase := func(queries []string) error {
 		ctx, cancel := context.WithCancel(context.Background())
@@ -443,7 +452,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 		sem := make(chan struct{}, searchConcurrency)
 
 		for _, query := range queries {
-			if validFileCount >= 15 {
+			if int(prevalidatedCandidateCount.Load()) >= earlyExitTarget {
 				break
 			}
 
@@ -473,26 +482,37 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 				}
 
 				if len(res.Data) > 0 {
+					type evaluatedFile struct {
+						key  string
+						eval CandidateEvaluation
+					}
+					evaluated := make([]evaluatedFile, 0, len(res.Data))
+					for _, file := range res.Data {
+						evaluated = append(evaluated, evaluatedFile{
+							key:  candidateIdentity(file),
+							eval: evaluateCandidate(file, matchContext),
+						})
+					}
+
 					resultsMu.Lock()
 					allSearchResults = append(allSearchResults, searchResult{query: query, result: res})
-
-					for _, f := range res.Data {
-						if isValidSize(f) {
-							validFileCount++
+					for _, item := range evaluated {
+						discoveredHashes[item.key] = struct{}{}
+						if existing, exists := candidateEvaluations[item.key]; !exists || item.eval.Confidence > existing.Confidence {
+							candidateEvaluations[item.key] = item.eval
+						}
+						if item.eval.Prevalidated {
+							prevalidatedHashes[item.key] = struct{}{}
 						}
 					}
-
-					uniqueHashes := make(map[string]struct{})
-					for _, sr := range allSearchResults {
-						for _, f := range sr.result.Data {
-							uniqueHashes[f.GetHash()] = struct{}{}
-						}
-					}
-					totalFoundResults = len(uniqueHashes)
+					totalFound := len(discoveredHashes)
+					prevalidatedFound := len(prevalidatedHashes)
+					totalFoundResults.Store(int64(totalFound))
+					prevalidatedCandidateCount.Store(int64(prevalidatedFound))
 					resultsMu.Unlock()
 
-					if validFileCount >= 15 {
-						addonLogger.Info("Early exit triggered: Found %d valid results, cancelling remaining searches.", validFileCount)
+					if prevalidatedFound >= earlyExitTarget {
+						addonLogger.Info("Early exit triggered: Found %d unique prevalidated candidates (raw unique hits=%d), cancelling remaining searches.", prevalidatedFound, totalFound)
 						cancel()
 					}
 				}
@@ -501,6 +521,9 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 		}
 
 		if err := g.Wait(); err != nil {
+			if IsAuthError(err) {
+				return err
+			}
 			if ctx.Err() != nil {
 				return nil
 			}
@@ -518,47 +541,44 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 	}
 
 	// 1.1. Primary Legacy Fallback Phase (XXxXX): ONLY if standard S/E was sparse (< 10)
-	if totalFoundResults < 10 && len(primaryLegacyQueries) > 0 {
-		addonLogger.Info("Primary standard S/E sparse (%d). Running primary legacy queries...", totalFoundResults)
+	if prevalidatedCandidateCount.Load() < 10 && len(primaryLegacyQueries) > 0 {
+		addonLogger.Info("Primary standard S/E sparse (%d prevalidated, %d raw). Running primary legacy queries...", prevalidatedCandidateCount.Load(), totalFoundResults.Load())
 		_ = runSearchPhase(primaryLegacyQueries)
 	}
 
 	// 1.5. Primary Date Fallback Phase: ONLY if primary standard/legacy was sparse and we have a daily date
-	if totalFoundResults < 10 && len(primaryDateQueries) > 0 {
-		addonLogger.Info("Primary standard/legacy sparse (%d). Running primary date-based queries...", totalFoundResults)
+	if prevalidatedCandidateCount.Load() < 10 && len(primaryDateQueries) > 0 {
+		addonLogger.Info("Primary standard/legacy sparse (%d prevalidated, %d raw). Running primary date-based queries...", prevalidatedCandidateCount.Load(), totalFoundResults.Load())
 		_ = runSearchPhase(primaryDateQueries)
 	}
 
 	// 2. Sequential Cascade Gating: Alternative Titles Standard S/E (Only if results still sparse < 10)
-	if totalFoundResults < 10 && len(altQueries) > 0 {
-		addonLogger.Info("Sparse results (%d) in primary phase. Running alternative standard queries...", totalFoundResults)
+	if prevalidatedCandidateCount.Load() < 10 && len(altQueries) > 0 {
+		addonLogger.Info("Sparse primary results (%d prevalidated, %d raw). Running alternative standard queries...", prevalidatedCandidateCount.Load(), totalFoundResults.Load())
 		_ = runSearchPhase(altQueries)
 	}
 
 	// 2.1. Alternative Legacy Fallback Phase: ONLY if results are still sparse (< 10)
-	if totalFoundResults < 10 && len(altLegacyQueries) > 0 {
-		addonLogger.Info("Alternative standard sparse (%d). Running alternative legacy queries...", totalFoundResults)
+	if prevalidatedCandidateCount.Load() < 10 && len(altLegacyQueries) > 0 {
+		addonLogger.Info("Alternative standard sparse (%d prevalidated, %d raw). Running alternative legacy queries...", prevalidatedCandidateCount.Load(), totalFoundResults.Load())
 		_ = runSearchPhase(altLegacyQueries)
 	}
 
 	// 2.5. Alternative Date Fallback Phase: ONLY if results are still sparse (< 10)
-	if totalFoundResults < 10 && len(altDateQueries) > 0 {
-		addonLogger.Info("Primary & Alt S/E sparse (%d). Running alternative date queries...", totalFoundResults)
+	if prevalidatedCandidateCount.Load() < 10 && len(altDateQueries) > 0 {
+		addonLogger.Info("Primary & Alt S/E sparse (%d prevalidated, %d raw). Running alternative date queries...", prevalidatedCandidateCount.Load(), totalFoundResults.Load())
 		_ = runSearchPhase(altDateQueries)
 	}
 
 	// 3. Lazy Gate Fallback: Broad searches (Only if results are still sparse < 10)
-	if totalFoundResults < 10 && len(broadQueries) > 0 {
-		addonLogger.Info("Sparse results (%d) found. Running broad fallbacks...", totalFoundResults)
+	if prevalidatedCandidateCount.Load() < 10 && len(broadQueries) > 0 {
+		addonLogger.Info("Sparse results (%d prevalidated, %d raw). Running broad fallbacks...", prevalidatedCandidateCount.Load(), totalFoundResults.Load())
 		_ = runSearchPhase(broadQueries)
 	}
 
-	targetSeason, _ := strconv.Atoi(meta.Season)
-	targetEpisode, _ := strconv.Atoi(meta.Episode)
-
 	// 4. Absolute episode fallback for series (Only if results are extremely low < 5)
-	if contentType == "series" && totalFoundResults < 5 && targetEpisode > 0 {
-		addonLogger.Info("Low results (%d) for series '%s'. Running absolute episode fallback...", totalFoundResults, meta.Name)
+	if contentType == "series" && prevalidatedCandidateCount.Load() < 5 && targetEpisode > 0 {
+		addonLogger.Info("Low results (%d prevalidated, %d raw) for series '%s'. Running absolute episode fallback...", prevalidatedCandidateCount.Load(), totalFoundResults.Load(), meta.Name)
 		var absFallbackQueries []string
 		searchTitles := append([]string{meta.Name}, filteredAlts...)
 		for _, titleVariant := range searchTitles {
@@ -582,25 +602,14 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 		return result, nil
 	}
 
-	processedHashes := make(map[string]struct{})
+	processedCandidates := make(map[string]struct{})
 	var streams []Stream
 
 	totalFilesSeen := 0
 	rejectedSample := 0
 	rejectedDuplicate := 0
 	rejectedTitle := 0
-
-	// Calculate the overall absolute episode number of the request (Fix B)
-	targetAbsoluteEpisode := 0
-	if contentType == "series" && targetSeason > 1 && len(meta.SeasonEpisodeCounts) > 0 {
-		totalPrevEpisodes := 0
-		for s := 1; s < targetSeason; s++ {
-			totalPrevEpisodes += meta.SeasonEpisodeCounts[s]
-		}
-		if totalPrevEpisodes > 0 {
-			targetAbsoluteEpisode = totalPrevEpisodes + targetEpisode
-		}
-	}
+	rejectionReasons := make(map[string]int)
 
 	for _, sr := range allSearchResults {
 		if len(streams) >= totalMaxResults {
@@ -612,166 +621,33 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 			}
 
 			title := GetPostTitle(file)
-			fileHash := file.GetHash()
 			totalFilesSeen++
 
+			// Preserve the legacy accounting order: obvious bad videos are
+			// rejected before duplicate detection.
 			if IsBadVideo(file) {
 				rejectedSample++
 				continue
 			}
-			if _, dup := processedHashes[fileHash]; dup {
+
+			candidateKey := candidateIdentity(file)
+			if _, dup := processedCandidates[candidateKey]; dup {
 				rejectedDuplicate++
 				continue
 			}
-			processedHashes[fileHash] = struct{}{}
+			processedCandidates[candidateKey] = struct{}{}
 
-			// Tier 1: Hard Deterministic Temporal Shield (0-allocation, executes in 1µs)
-			if isNewerShowDisqualified(file.Ts, meta.Year) {
+			evaluation, ok := candidateEvaluations[candidateKey]
+			if !ok {
+				evaluation = evaluateCandidate(file, matchContext)
+			}
+			if !evaluation.Accepted {
 				rejectedTitle++
+				rejectionReasons[evaluation.Reason]++
 				continue
 			}
 
-			// Tier 2: Probabilistic Bayesian LLR Gated Shield
-			targetPrior := 0.0
-			if contentType == "series" {
-				targetPrior = ClassifyTargetPrior(meta)
-
-				// Only evaluate LLR patterns if the target classification is highly confident
-				if math.Abs(targetPrior) >= 3.0 {
-					candScore := ComputeCandidateScore(title)
-
-					if targetPrior > 3.0 && candScore < -3.0 {
-						rejectedTitle++
-						continue
-					}
-					if targetPrior < -3.0 && candScore > 4.0 {
-						rejectedTitle++
-						continue
-					}
-				}
-			}
-
-			// Anime Hour-Long Duration Guardrail (reboot-proofing for continuous anime series)
-			if contentType == "series" && targetPrior > 3.0 {
-				durationStr := file.GetDuration()
-				// Standard anime episodes are 20-25m. If the candidate is an hour or more, reject.
-				if strings.Contains(durationStr, "h") || strings.Contains(durationStr, "hour") {
-					rejectedTitle++
-					continue
-				}
-			}
-
-			parsedInfo := RobustParseInfo(title, 0)
-
-			// Tier 3: Double-Sided Title Isolation (Disqualifies Castle Rock episode "Severance")
-			if len(parsedInfo.Title) > 0 {
-				sanitizedParsed := SanitizeTitle(parsedInfo.Title)
-				anyMatch := false
-				for _, tv := range allTitles {
-					sanitizedMeta := SanitizeTitle(tv)
-					if strings.Contains(sanitizedParsed, sanitizedMeta) || strings.Contains(sanitizedMeta, sanitizedParsed) {
-						anyMatch = true
-						break
-					}
-				}
-				if !anyMatch {
-					rejectedTitle++
-					continue
-				}
-			}
-
-			if contentType == "series" {
-				matched := false
-				// Local matching uses the full allTitles array (untruncated)
-				for _, tv := range allTitles {
-					if MatchesTitle(title, tv, useStrictMatching) {
-						matched = true
-						break
-					}
-				}
-				if !matched {
-					rejectedTitle++
-					continue
-				}
-
-				// Season 1 Year Discrepancy Guardrail (highly robust reboot-proofing)
-				if targetSeason == 1 && meta.Year > 0 && parsedInfo.Year > 0 {
-					diff := parsedInfo.Year - meta.Year
-					if diff < 0 {
-						diff = -diff
-					}
-					if diff > 1 {
-						rejectedTitle++
-						continue
-					}
-				}
-
-				if targetEpisode > 0 && isExtraOrSpecial(title) {
-					rejectedTitle++
-					continue
-				}
-
-				if targetSeason > 0 && targetEpisode > 0 {
-					isPack, _, _, hasRange := ParsePackOrRange(title, targetEpisode)
-
-					episodeMatches := parsedInfo.Episode == targetEpisode || (targetAbsoluteEpisode > 0 && parsedInfo.Episode == targetAbsoluteEpisode)
-					if !episodeMatches && len(parsedInfo.Episodes) > 1 {
-						for _, ep := range parsedInfo.Episodes {
-							if ep == targetEpisode || (targetAbsoluteEpisode > 0 && ep == targetAbsoluteEpisode) {
-								episodeMatches = true
-								break
-							}
-						}
-					}
-
-					if (parsedInfo.Season > 0 && parsedInfo.Season != targetSeason) ||
-						(parsedInfo.Episode > 0 && !episodeMatches && !hasRange && !isPack && !parsedInfo.IsPack) {
-
-						if parsedInfo.Season == 0 && parsedInfo.Episode > 0 {
-							// Skip rejection
-						} else {
-							rejectedTitle++
-							continue
-						}
-					}
-
-					if parsedInfo.Season == 0 && parsedInfo.Episode == 0 && parsedInfo.Date == "" && !isPack && !parsedInfo.IsPack {
-						rejectedTitle++
-						continue
-					}
-				}
-			}
-
-			if contentType == "movie" {
-				matched := false
-				// Local matching uses the full allTitles array (untruncated)
-				for _, tv := range allTitles {
-					if MatchesTitle(title, tv, useStrictMatching) {
-						matched = true
-						break
-					}
-				}
-				if !matched {
-					rejectedTitle++
-					continue
-				}
-
-				if parsedInfo.Season > 0 || parsedInfo.Episode > 0 || parsedInfo.IsPack {
-					rejectedTitle++
-					continue
-				}
-
-				if meta.Year > 0 && parsedInfo.Year > 0 {
-					diff := parsedInfo.Year - meta.Year
-					if diff < 0 {
-						diff = -diff
-					}
-					if diff > 1 {
-						rejectedTitle++
-						continue
-					}
-				}
-			}
+			parsedInfo := evaluation.Parsed
 
 			streamPath := CreateStreamPath(file)
 			streamUrl, err := CreateStreamUrl(
@@ -798,12 +674,20 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 				preferredLang,
 				parsedInfo,
 			)
+			if stream.SortMeta != nil {
+				stream.SortMeta.CandidateConfidence = evaluation.Confidence
+				stream.SortMeta.MatchedTitle = evaluation.MatchedTitle
+				stream.SortMeta.MatchedTitleSource = evaluation.MatchedSource
+			}
 			streams = append(streams, stream)
 		}
 	}
 
-	addonLogger.Info("Search complete: totalFilesSeen=%d matchingCount=%d (rejected: sample/quality=%d, duplicate=%d, titleMismatch=%d)",
-		totalFilesSeen, len(streams), rejectedSample, rejectedDuplicate, rejectedTitle)
+	addonLogger.Info("Search complete: totalFilesSeen=%d matchingCount=%d prevalidated=%d rawUnique=%d (rejected: sample/quality=%d, duplicate=%d, candidateMismatch=%d)",
+		totalFilesSeen, len(streams), prevalidatedCandidateCount.Load(), totalFoundResults.Load(), rejectedSample, rejectedDuplicate, rejectedTitle)
+	if len(rejectionReasons) > 0 {
+		addonLogger.Debug("Candidate rejection reasons: %v", rejectionReasons)
+	}
 
 	calculateTotalScore := func(a *SortMeta) int {
 		if a == nil {
