@@ -689,263 +689,12 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 		addonLogger.Debug("Candidate rejection reasons: %v", rejectionReasons)
 	}
 
-	calculateTotalScore := func(a *SortMeta) int {
-		if a == nil {
-			return 0
-		}
-		return a.QualityScore*1000 + a.SourceScore*100 + a.HDRScore*10 + a.CodecScore
-	}
-
-	if len(streams) > 0 {
-		if sortingPreference == "language_first" && preferredLang != "" {
-			var preferredLangStreams, otherStreams []Stream
-			for _, s := range streams {
-				if s.SortMeta != nil && s.SortMeta.HasPreferredLang {
-					preferredLangStreams = append(preferredLangStreams, s)
-				} else {
-					otherStreams = append(otherStreams, s)
-				}
-			}
-
-			sortByQualityAndSize := func(a, b Stream) bool {
-				if a.SortMeta == nil && b.SortMeta == nil {
-					return false
-				}
-				if a.SortMeta == nil {
-					return false
-				}
-				if b.SortMeta == nil {
-					return true
-				}
-
-				aTotal := calculateTotalScore(a.SortMeta)
-				bTotal := calculateTotalScore(b.SortMeta)
-				if aTotal != bTotal {
-					return aTotal > bTotal
-				}
-
-				aScore := 0
-				bScore := 0
-				if a.SortMeta.IsProper {
-					aScore = 2
-				}
-				if a.SortMeta.IsRepack {
-					aScore = 1
-				}
-				if b.SortMeta.IsProper {
-					bScore = 2
-				}
-				if b.SortMeta.IsRepack {
-					bScore = 1
-				}
-				if aScore != bScore {
-					return aScore > bScore
-				}
-
-				return CompareSizeMeta(a.SortMeta, b.SortMeta) < 0
-			}
-
-			sort.Slice(preferredLangStreams, func(i, j int) bool {
-				return sortByQualityAndSize(preferredLangStreams[i], preferredLangStreams[j])
-			})
-			sort.Slice(otherStreams, func(i, j int) bool {
-				return sortByQualityAndSize(otherStreams[i], otherStreams[j])
-			})
-
-			streams = append(preferredLangStreams, otherStreams...)
-		} else {
-			sort.Slice(streams, func(i, j int) bool {
-				a, b := streams[i].SortMeta, streams[j].SortMeta
-				if a == nil && b == nil {
-					return false
-				}
-				if a == nil {
-					return false
-				}
-				if b == nil {
-					return true
-				}
-				switch sortingPreference {
-				case "size_first":
-					sizeCompare := CompareSizeMeta(a, b)
-					if sizeCompare != 0 {
-						return sizeCompare < 0
-					}
-					if calculateTotalScore(a) != calculateTotalScore(b) {
-						return calculateTotalScore(a) > calculateTotalScore(b)
-					}
-					if a.HasPreferredLang != b.HasPreferredLang {
-						return a.HasPreferredLang
-					}
-					return false
-				case "date_first":
-					if a.DateMs != b.DateMs {
-						return a.DateMs > b.DateMs
-					}
-					if calculateTotalScore(a) != calculateTotalScore(b) {
-						return calculateTotalScore(a) > calculateTotalScore(b)
-					}
-					if a.HasPreferredLang != b.HasPreferredLang {
-						return a.HasPreferredLang
-					}
-					return CompareSizeMeta(a, b) < 0
-				case "lang_first", "language_first":
-					if a.HasPreferredLang != b.HasPreferredLang {
-						return a.HasPreferredLang
-					}
-					if calculateTotalScore(a) != calculateTotalScore(b) {
-						return calculateTotalScore(a) > calculateTotalScore(b)
-					}
-					return CompareSizeMeta(a, b) < 0
-				default: // quality_first
-					if calculateTotalScore(a) != calculateTotalScore(b) {
-						return calculateTotalScore(a) > calculateTotalScore(b)
-					}
-
-					aScore := 0
-					bScore := 0
-					if a.IsProper {
-						aScore = 2
-					}
-					if a.IsRepack {
-						aScore = 1
-					}
-					if b.IsProper {
-						bScore = 2
-					}
-					if b.IsRepack {
-						bScore = 1
-					}
-					if aScore != bScore {
-						return aScore > bScore
-					}
-
-					if a.HasPreferredLang != b.HasPreferredLang {
-						return a.HasPreferredLang
-					}
-					return CompareSizeMeta(a, b) < 0
-				}
-			})
-		}
-	}
-
-	if len(streams) > 0 {
-		defaultQualitySet := []string{"4k", "1080p", "720p", "480p"}
-		isCustomFilter := !(len(qualityFilters) == len(defaultQualitySet) &&
-			hasAll(defaultQualitySet, qualityFilters))
-
-		if isCustomFilter {
-			qualityMap := map[string][]string{
-				"4k":    {"4K", "UHD", "2160p"},
-				"1080p": {"1080p"},
-				"720p":  {"720p"},
-				"480p":  {"480p", "SD"},
-			}
-			var allowedTerms []string
-			for _, q := range qualityFilters {
-				if terms, ok := qualityMap[q]; ok {
-					allowedTerms = append(allowedTerms, terms...)
-				}
-			}
-			if len(allowedTerms) > 0 {
-				filtered := make([]Stream, 0, len(streams))
-				for _, s := range streams {
-					qualityLine := ""
-					parts := strings.Split(s.Name, "\n")
-					if len(parts) > 1 {
-						qualityLine = parts[1]
-					}
-					for _, term := range allowedTerms {
-						if strings.Contains(qualityLine, term) {
-							filtered = append(filtered, s)
-							break
-						}
-					}
-				}
-				if len(filtered) > 0 {
-					streams = filtered
-				}
-			}
-		}
-
-		if maxFileSizeGB > 0 {
-			filtered := make([]Stream, 0, len(streams))
-			for _, s := range streams {
-				videoSize := int64(0)
-				if s.BehaviorHints != nil {
-					videoSize = s.BehaviorHints.VideoSize
-				}
-
-				if videoSize > 0 {
-					sizeGB := float64(videoSize) / (1024 * 1024 * 1024)
-					if sizeGB <= maxFileSizeGB {
-						filtered = append(filtered, s)
-					}
-				} else {
-					lines := strings.Split(s.Description, "\n")
-					for _, line := range lines {
-						if strings.Contains(line, "📦") {
-							beforeDate := strings.Split(line, "📅")[0]
-							beforeDate = strings.TrimSpace(beforeDate)
-							beforeDate = strings.Replace(beforeDate, "📦", "", 1)
-							beforeDate = strings.TrimSpace(beforeDate)
-							if strings.Contains(beforeDate, "GB") {
-								v, _ := strconv.ParseFloat(floatValueRe.FindString(beforeDate), 64)
-								if v <= maxFileSizeGB {
-									filtered = append(filtered, s)
-								}
-							} else if strings.Contains(beforeDate, "MB") {
-								v, _ := strconv.ParseFloat(floatValueRe.FindString(beforeDate), 64)
-								if v/1024 <= maxFileSizeGB {
-									filtered = append(filtered, s)
-								}
-							} else {
-								filtered = append(filtered, s)
-							}
-							break
-						}
-					}
-				}
-			}
-			if len(filtered) > 0 {
-				streams = filtered
-			}
-		}
-
-		if maxResultsPerQualityVal > 0 {
-			streamsByQuality := make(map[string][]Stream)
-			for _, s := range streams {
-				qualityLine := ""
-				parts := strings.Split(s.Name, "\n")
-				if len(parts) > 1 {
-					qualityLine = parts[1]
-				}
-				category := "other"
-				if strings.Contains(qualityLine, "4K") || strings.Contains(qualityLine, "UHD") || strings.Contains(qualityLine, "2160p") {
-					category = "4k"
-				} else if strings.Contains(qualityLine, "1080p") {
-					category = "1080p"
-				} else if strings.Contains(qualityLine, "720p") {
-					category = "720p"
-				} else if strings.Contains(qualityLine, "480p") || strings.Contains(qualityLine, "SD") {
-					category = "480p"
-				}
-				streamsByQuality[category] = append(streamsByQuality[category], s)
-			}
-			var limited []Stream
-			orderKeys := []string{"4k", "1080p", "720p", "480p", "other"}
-			for _, k := range orderKeys {
-				qStreams := streamsByQuality[k]
-				if len(qStreams) > maxResultsPerQualityVal {
-					qStreams = qStreams[:maxResultsPerQualityVal]
-				}
-				limited = append(limited, qStreams...)
-			}
-			if len(limited) > 0 {
-				streams = limited
-			}
-		}
-	}
+	streams = selectAndRankStreams(streams, streamSelectionOptions{
+		SortingPreference:    sortingPreference,
+		QualityFilters:       qualityFilters,
+		MaxFileSizeGB:        maxFileSizeGB,
+		MaxResultsPerQuality: maxResultsPerQualityVal,
+	})
 
 	cacheMaxAge := getCacheMaxAge(len(streams))
 
@@ -973,19 +722,6 @@ func minVal(a, b int) int {
 	return b
 }
 
-func hasAll(haystack, needles []string) bool {
-	set := make(map[string]bool)
-	for _, h := range haystack {
-		set[h] = true
-	}
-	for _, n := range needles {
-		if !set[n] {
-			return false
-		}
-	}
-	return true
-}
-
 func MapStream(duration, size, fullResolution, title, fileExtension string, videoSize int64, url string, file api.FileData, preferredLang string, parsedInfo *ParseResult) Stream {
 	quality := GetQuality(title, fullResolution)
 	badges := FormatBadges(title)
@@ -1004,69 +740,7 @@ func MapStream(duration, size, fullResolution, title, fileExtension string, vide
 		languageInfo = fmt.Sprintf("🌐 %s%s", strings.Join(file.Alangs, ", "), star)
 	}
 
-	sizeUnit, sizeValue := ParseSizeForSort(size)
-	dateMs := int64(0)
-	if file.Five != "" {
-		if t, err := time.Parse(time.RFC3339, file.Five); err == nil {
-			dateMs = t.UnixMilli()
-		} else if t, err := time.Parse("2006-01-02 15:04:05", file.Five); err == nil {
-			dateMs = t.UnixMilli()
-		} else if t, err := time.Parse("01-02-2006 15:04:05", file.Five); err == nil {
-			dateMs = t.UnixMilli()
-		}
-	}
-	hasPreferredLang := preferredLang != "" && file.Alangs != nil && contains(file.Alangs, preferredLang)
-
-	sourceScore := 0
-	if strings.Contains(badges, "Remux") {
-		sourceScore = 8
-	} else if strings.Contains(badges, "BluRay") {
-		sourceScore = 7
-	} else if strings.Contains(badges, "WEB-DL") {
-		sourceScore = 6
-	} else if strings.Contains(badges, "WEBRip") {
-		sourceScore = 5
-	} else if strings.Contains(badges, "HDTV") {
-		sourceScore = 5
-	} else if strings.Contains(badges, "HDRip") {
-		sourceScore = 4
-	} else if strings.Contains(badges, "DVDRip") {
-		sourceScore = 3
-	}
-
-	hdrScore := 0
-	if strings.Contains(badges, "DV") {
-		hdrScore = 4
-	} else if strings.Contains(badges, "HDR10+") {
-		hdrScore = 3
-	} else if strings.Contains(badges, "HDR10") {
-		hdrScore = 2
-	} else if strings.Contains(badges, "HDR") {
-		hdrScore = 1
-	}
-
-	codecScore := 0
-	if strings.Contains(badges, "AV1") {
-		codecScore = 3
-	} else if strings.Contains(badges, "H265 HEVC") {
-		codecScore = 2
-	} else if strings.Contains(badges, "H264 AVC") {
-		codecScore = 1
-	}
-
-	sortMeta := &SortMeta{
-		QualityScore:     QualityScoreFromLabel(quality),
-		SourceScore:      sourceScore,
-		HDRScore:         hdrScore,
-		CodecScore:       codecScore,
-		SizeUnit:         sizeUnit,
-		SizeValue:        sizeValue,
-		DateMs:           dateMs,
-		HasPreferredLang: hasPreferredLang,
-		IsProper:         parsedInfo.IsProper,
-		IsRepack:         parsedInfo.IsRepack,
-		Edition:          parsedInfo.Edition,
-	}
+	sortMeta := buildStructuredSortMeta(file, preferredLang, parsedInfo, quality, size, title)
 
 	bingeLang := "unknown"
 	if file.Alangs != nil && len(file.Alangs) > 0 {
@@ -1116,7 +790,9 @@ func MapStream(duration, size, fullResolution, title, fileExtension string, vide
 		Filename:    SanitizeFilenameForStremio(title + fileExtension),
 		BingeGroup:  bingeGroup,
 	}
-	if videoSize > 0 {
+	if sortMeta != nil && sortMeta.VideoSizeBytes > 0 {
+		bh.VideoSize = sortMeta.VideoSizeBytes
+	} else if videoSize > 0 {
 		bh.VideoSize = videoSize
 	}
 
