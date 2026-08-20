@@ -306,11 +306,7 @@ func ServeHTTP(port int) {
 	serverLogger.Info("STREMIO_STALE_REVALIDATE_SECONDS: %d", shared.ParseIntEnv("STREMIO_STALE_REVALIDATE_SECONDS", 3600))
 	serverLogger.Info("STREMIO_STALE_ERROR_SECONDS: %d", shared.ParseIntEnv("STREMIO_STALE_ERROR_SECONDS", 86400))
 	serverLogger.Info("--- Integrations ---")
-	if os.Getenv("TMDB_API_KEY") != "" {
-		serverLogger.Info("TMDB translations: Enabled")
-	} else {
-		serverLogger.Info("TMDB translations: Disabled")
-	}
+	serverLogger.Info("TMDB metadata: %s", tmdbIntegrationStatus())
 	serverLogger.Info("-----------------------------------")
 
 	if err := r.Run(fmt.Sprintf(":%d", port)); err != nil {

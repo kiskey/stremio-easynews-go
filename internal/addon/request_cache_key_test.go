@@ -59,3 +59,13 @@ func TestBuildRequestCacheKeyScopesEffectiveBaseURL(t *testing.T) {
 		t.Fatal("explicit config BaseUrl must take precedence over ADDON_BASE_URL")
 	}
 }
+
+func TestRequestCacheVersionV29(t *testing.T) {
+	if requestCacheVersion != "v29" {
+		t.Fatalf("requestCacheVersion = %q, want v29", requestCacheVersion)
+	}
+	key := buildRequestCacheKey("movie", "tt1234567", "cred", AddonConfig{})
+	if !strings.HasPrefix(key, "v29:") {
+		t.Fatalf("cache key = %q, want v29 prefix", key)
+	}
+}

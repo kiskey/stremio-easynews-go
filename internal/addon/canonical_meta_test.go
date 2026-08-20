@@ -106,3 +106,24 @@ func TestYearFromISODate(t *testing.T) {
 		}
 	}
 }
+
+func TestCanonicalProjectionPreservesAlternativeProvenance(t *testing.T) {
+	meta := CanonicalMetadata{
+		Primary: TitleVariant{Title: "Primary", Source: "tmdb.primary", Kind: "primary", Confidence: 1.0},
+		Variants: []TitleVariant{
+			{Title: "Primary", Source: "tmdb.primary", Kind: "primary", Confidence: 1.0},
+			{Title: "Romanized", Source: "tmdb.alternative", Kind: "Romaji", Country: "JP", Confidence: 0.90},
+		},
+		Source:     "tmdb",
+		Confidence: 0.99,
+	}
+
+	projected := meta.toMetaProviderResponse()
+	if len(projected.TitleVariants) != 2 {
+		t.Fatalf("TitleVariants count = %d, want 2", len(projected.TitleVariants))
+	}
+	got := projected.TitleVariants[1]
+	if got.Country != "JP" || got.Kind != "Romaji" || got.Source != "tmdb.alternative" {
+		t.Fatalf("alternative provenance lost during projection: %+v", got)
+	}
+}

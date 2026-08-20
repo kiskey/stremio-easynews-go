@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -20,8 +21,9 @@ import (
 var metaLogger = shared.CreateLogger("Meta", "")
 
 var (
-	tmdbAPIKey = os.Getenv("TMDB_API_KEY")
-	useTMDB    atomic.Bool
+	tmdbAPIKey      = strings.TrimSpace(os.Getenv("TMDB_API_KEY"))
+	tmdbAccessToken = strings.TrimSpace(os.Getenv("TMDB_ACCESS_TOKEN"))
+	useTMDB         atomic.Bool
 )
 
 const (
@@ -44,7 +46,7 @@ var metadataHTTPClient = &http.Client{
 }
 
 func init() {
-	useTMDB.Store(tmdbAPIKey != "")
+	useTMDB.Store(tmdbAccessToken != "" || tmdbAPIKey != "")
 }
 
 type tmdbIDMapping struct {
@@ -57,6 +59,12 @@ func NewBoundedCache[K comparable, V any](maxEntries int, ttl time.Duration) *sh
 	return shared.NewTTLCache[K, V](maxEntries, ttl)
 }
 
+type tmdbAlternativeTitle struct {
+	Country string
+	Title   string
+	Type    string
+}
+
 type tmdbDetails struct {
 	DisplayTitle        string
 	OriginalTitle       string
@@ -64,6 +72,8 @@ type tmdbDetails struct {
 	OriginCountry       []string
 	IsAnimation         bool
 	SeasonEpisodeCounts map[int]int
+	AlternativeTitles   []tmdbAlternativeTitle
+	TranslatedTitles    map[string]string
 }
 
 type tmdbSeasonDetails struct {
@@ -74,16 +84,12 @@ type tmdbSeasonDetails struct {
 var (
 	metadataCacheMaxEntries = shared.ParseIntEnv("METADATA_CACHE_ENTRIES", 2000)
 	imdbToTMDBIDCache       = NewBoundedCache[string, tmdbIDMapping](metadataCacheMaxEntries, 48*time.Hour)
-	tmdbAltTitlesCache      = NewBoundedCache[string, []string](metadataCacheMaxEntries, 24*time.Hour)
 	tmdbDetailsCache        = NewBoundedCache[string, tmdbDetails](metadataCacheMaxEntries, 48*time.Hour)
-	tmdbTransTitleCache     = NewBoundedCache[string, string](metadataCacheMaxEntries, 24*time.Hour)
 	tmdbSeasonAirDateCache  = NewBoundedCache[string, tmdbSeasonDetails](metadataCacheMaxEntries, 24*time.Hour)
 	metaResponseCache       = NewBoundedCache[string, MetaProviderResponse](metadataCacheMaxEntries, 24*time.Hour)
 
 	tmdbIDSingleflight        singleflight.Group
-	altTitlesSingleflight     singleflight.Group
 	tmdbDetailsSingleflight   singleflight.Group
-	transTitleSingleflight    singleflight.Group
 	seasonAirDateSingleflight singleflight.Group
 	metaSingleflight          singleflight.Group
 )
@@ -126,6 +132,59 @@ func newMetadataRequest(ctx context.Context, rawURL, acceptLanguage string) (*ht
 		req.Header.Set("Accept-Language", acceptLanguage)
 	}
 	return req, nil
+}
+
+func tmdbEndpoint(path string, query url.Values) string {
+	u := url.URL{
+		Scheme: "https",
+		Host:   "api.themoviedb.org",
+		Path:   path,
+	}
+	if query != nil {
+		u.RawQuery = query.Encode()
+	}
+	return u.String()
+}
+
+func newTMDBRequestWithCredentials(ctx context.Context, path string, query url.Values, acceptLanguage, accessToken, apiKey string) (*http.Request, error) {
+	req, err := newMetadataRequest(ctx, tmdbEndpoint(path, query), acceptLanguage)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+
+	accessToken = strings.TrimSpace(accessToken)
+	apiKey = strings.TrimSpace(apiKey)
+	switch {
+	case accessToken != "":
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+	case apiKey != "":
+		values := req.URL.Query()
+		values.Set("api_key", apiKey)
+		req.URL.RawQuery = values.Encode()
+	default:
+		return nil, fmt.Errorf("TMDB credentials are not configured")
+	}
+	return req, nil
+}
+
+func newTMDBRequest(ctx context.Context, path string, query url.Values, acceptLanguage string) (*http.Request, error) {
+	return newTMDBRequestWithCredentials(ctx, path, query, acceptLanguage, tmdbAccessToken, tmdbAPIKey)
+}
+
+func validateTMDBResponse(resp *http.Response, operation string) error {
+	if resp == nil {
+		return fmt.Errorf("TMDB %s returned an empty response", operation)
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		useTMDB.Store(false)
+		metaLogger.Error("TMDB: Authentication rejected while performing %s. Disabling TMDB integration for this process.", operation)
+		return fmt.Errorf("TMDB authentication failed")
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("TMDB %s error: %d", operation, resp.StatusCode)
+	}
+	return nil
 }
 
 func fetchWithRetry(ctx context.Context, client *http.Client, req *http.Request) (*http.Response, error) {
@@ -226,8 +285,8 @@ func resolveTMDBID(imdbID string) (int, bool, string, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), metaFetchTimeout)
 		defer cancel()
 
-		findURL := fmt.Sprintf("https://api.themoviedb.org/3/find/%s?api_key=%s&external_source=imdb_id", imdbID, tmdbAPIKey)
-		req, err := newMetadataRequest(ctx, findURL, "en-US")
+		findQuery := url.Values{"external_source": []string{"imdb_id"}}
+		req, err := newTMDBRequest(ctx, "/3/find/"+imdbID, findQuery, "en-US")
 		if err != nil {
 			return tmdbIDMapping{}, err
 		}
@@ -239,14 +298,9 @@ func resolveTMDBID(imdbID string) (int, bool, string, error) {
 		}
 		defer drainAndClose(resp.Body)
 
-		if resp.StatusCode == http.StatusUnauthorized {
-			useTMDB.Store(false)
-			metaLogger.Error("TMDB: Invalid API Key provided. Disabling TMDB integration globally.")
-			return tmdbIDMapping{}, fmt.Errorf("TMDB API key invalid")
-		}
-		if resp.StatusCode != http.StatusOK {
-			metaLogger.Error("TMDB: Upstream find returned status code: %d for IMDb ID '%s'", resp.StatusCode, imdbID)
-			return tmdbIDMapping{}, fmt.Errorf("TMDB find error: %d", resp.StatusCode)
+		if err := validateTMDBResponse(resp, "find"); err != nil {
+			metaLogger.Error("TMDB: Find lookup failed for IMDb ID '%s': %v", imdbID, err)
+			return tmdbIDMapping{}, err
 		}
 
 		var findData struct {
@@ -316,8 +370,8 @@ func getTMDBSeasonDetails(imdbID string, season int) tmdbSeasonDetails {
 		ctx, cancel := context.WithTimeout(context.Background(), metaFetchTimeout)
 		defer cancel()
 
-		u := fmt.Sprintf("https://api.themoviedb.org/3/tv/%d/season/%d?api_key=%s", tmdbID, season, tmdbAPIKey)
-		req, err := newMetadataRequest(ctx, u, "en-US")
+		seasonPath := fmt.Sprintf("/3/tv/%d/season/%d", tmdbID, season)
+		req, err := newTMDBRequest(ctx, seasonPath, nil, "en-US")
 		if err != nil {
 			return tmdbSeasonDetails{AirDates: make(map[int]string)}, err
 		}
@@ -328,8 +382,8 @@ func getTMDBSeasonDetails(imdbID string, season int) tmdbSeasonDetails {
 		}
 		defer drainAndClose(resp.Body)
 
-		if resp.StatusCode != http.StatusOK {
-			return tmdbSeasonDetails{AirDates: make(map[int]string)}, fmt.Errorf("TMDB season error: %d", resp.StatusCode)
+		if err := validateTMDBResponse(resp, "season details"); err != nil {
+			return tmdbSeasonDetails{AirDates: make(map[int]string)}, err
 		}
 
 		var data struct {
@@ -369,6 +423,139 @@ func getTMDBSeasonAirDates(imdbID string, season int) map[int]string {
 	return getTMDBSeasonDetails(imdbID, season).AirDates
 }
 
+func decodeTMDBDetails(body io.Reader, isMovie bool) (tmdbDetails, error) {
+	var details struct {
+		Title               string   `json:"title"`
+		Name                string   `json:"name"`
+		OriginalTitle       string   `json:"original_title"`
+		OriginalName        string   `json:"original_name"`
+		ReleaseDate         string   `json:"release_date"`
+		FirstAirDate        string   `json:"first_air_date"`
+		OriginCountry       []string `json:"origin_country"`
+		ProductionCountries []struct {
+			ISO3166_1 string `json:"iso_3166_1"`
+		} `json:"production_countries"`
+		Genres []struct {
+			ID int `json:"id"`
+		} `json:"genres"`
+		Seasons []struct {
+			SeasonNumber int `json:"season_number"`
+			EpisodeCount int `json:"episode_count"`
+		} `json:"seasons"`
+		AlternativeTitles struct {
+			Titles []struct {
+				ISO3166_1 string `json:"iso_3166_1"`
+				Title     string `json:"title"`
+				Type      string `json:"type"`
+			} `json:"titles"`
+			Results []struct {
+				ISO3166_1 string `json:"iso_3166_1"`
+				Title     string `json:"title"`
+				Type      string `json:"type"`
+			} `json:"results"`
+		} `json:"alternative_titles"`
+		Translations struct {
+			Translations []struct {
+				ISO639_1 string `json:"iso_639_1"`
+				Data     struct {
+					Title string `json:"title"`
+					Name  string `json:"name"`
+				} `json:"data"`
+			} `json:"translations"`
+		} `json:"translations"`
+	}
+	if err := sonic.ConfigStd.NewDecoder(body).Decode(&details); err != nil {
+		return tmdbDetails{}, err
+	}
+
+	displayTitle := strings.TrimSpace(details.Title)
+	if displayTitle == "" {
+		displayTitle = strings.TrimSpace(details.Name)
+	}
+	originalTitle := strings.TrimSpace(details.OriginalTitle)
+	if originalTitle == "" {
+		originalTitle = strings.TrimSpace(details.OriginalName)
+	}
+	if originalTitle == "" {
+		originalTitle = displayTitle
+	}
+
+	year := yearFromISODate(details.ReleaseDate)
+	if year == 0 {
+		year = yearFromISODate(details.FirstAirDate)
+	}
+
+	originCountries := append([]string(nil), details.OriginCountry...)
+	if len(originCountries) == 0 {
+		for _, country := range details.ProductionCountries {
+			code := strings.TrimSpace(country.ISO3166_1)
+			if code != "" {
+				originCountries = append(originCountries, code)
+			}
+		}
+	}
+
+	isAnimation := false
+	for _, genre := range details.Genres {
+		if genre.ID == 16 {
+			isAnimation = true
+			break
+		}
+	}
+
+	counts := make(map[int]int)
+	for _, season := range details.Seasons {
+		counts[season.SeasonNumber] = season.EpisodeCount
+	}
+
+	alternativeTitles := make([]tmdbAlternativeTitle, 0, len(details.AlternativeTitles.Titles)+len(details.AlternativeTitles.Results))
+	for _, item := range details.AlternativeTitles.Titles {
+		alternativeTitles = append(alternativeTitles, tmdbAlternativeTitle{
+			Country: strings.ToUpper(strings.TrimSpace(item.ISO3166_1)),
+			Title:   strings.TrimSpace(item.Title),
+			Type:    strings.TrimSpace(item.Type),
+		})
+	}
+	for _, item := range details.AlternativeTitles.Results {
+		alternativeTitles = append(alternativeTitles, tmdbAlternativeTitle{
+			Country: strings.ToUpper(strings.TrimSpace(item.ISO3166_1)),
+			Title:   strings.TrimSpace(item.Title),
+			Type:    strings.TrimSpace(item.Type),
+		})
+	}
+
+	translatedTitles := make(map[string]string)
+	for _, translation := range details.Translations.Translations {
+		language := strings.ToLower(strings.TrimSpace(translation.ISO639_1))
+		if language == "" {
+			continue
+		}
+		translated := ""
+		if isMovie {
+			translated = strings.TrimSpace(translation.Data.Title)
+		} else {
+			translated = strings.TrimSpace(translation.Data.Name)
+		}
+		if translated == "" {
+			continue
+		}
+		if _, exists := translatedTitles[language]; !exists {
+			translatedTitles[language] = translated
+		}
+	}
+
+	return tmdbDetails{
+		DisplayTitle:        displayTitle,
+		OriginalTitle:       originalTitle,
+		Year:                year,
+		OriginCountry:       originCountries,
+		IsAnimation:         isAnimation,
+		SeasonEpisodeCounts: counts,
+		AlternativeTitles:   alternativeTitles,
+		TranslatedTitles:    translatedTitles,
+	}, nil
+}
+
 func getTMDBDetails(imdbID string) tmdbDetails {
 	if !useTMDB.Load() {
 		return tmdbDetails{}
@@ -388,17 +575,16 @@ func getTMDBDetails(imdbID string) tmdbDetails {
 			return tmdbDetails{}, err
 		}
 
-		var u string
+		mediaPath := fmt.Sprintf("/3/tv/%d", tmdbID)
 		if isMovie {
-			u = fmt.Sprintf("https://api.themoviedb.org/3/movie/%d?api_key=%s", tmdbID, tmdbAPIKey)
-		} else {
-			u = fmt.Sprintf("https://api.themoviedb.org/3/tv/%d?api_key=%s", tmdbID, tmdbAPIKey)
+			mediaPath = fmt.Sprintf("/3/movie/%d", tmdbID)
 		}
+		query := url.Values{"append_to_response": []string{"alternative_titles,translations"}}
 
 		ctx, cancel := context.WithTimeout(context.Background(), metaFetchTimeout)
 		defer cancel()
 
-		req, err := newMetadataRequest(ctx, u, "en-US")
+		req, err := newTMDBRequest(ctx, mediaPath, query, "en-US")
 		if err != nil {
 			return tmdbDetails{}, err
 		}
@@ -409,84 +595,16 @@ func getTMDBDetails(imdbID string) tmdbDetails {
 		}
 		defer drainAndClose(resp.Body)
 
-		if resp.StatusCode != http.StatusOK {
-			return tmdbDetails{}, fmt.Errorf("TMDB details error: %d", resp.StatusCode)
-		}
-
-		var details struct {
-			Title               string   `json:"title"`
-			Name                string   `json:"name"`
-			OriginalTitle       string   `json:"original_title"`
-			OriginalName        string   `json:"original_name"`
-			ReleaseDate         string   `json:"release_date"`
-			FirstAirDate        string   `json:"first_air_date"`
-			OriginCountry       []string `json:"origin_country"`
-			ProductionCountries []struct {
-				ISO3166_1 string `json:"iso_3166_1"`
-			} `json:"production_countries"`
-			Genres []struct {
-				ID int `json:"id"`
-			} `json:"genres"`
-			Seasons []struct {
-				SeasonNumber int `json:"season_number"`
-				EpisodeCount int `json:"episode_count"`
-			} `json:"seasons"`
-		}
-		if err := sonic.ConfigStd.NewDecoder(resp.Body).Decode(&details); err != nil {
+		if err := validateTMDBResponse(resp, "details"); err != nil {
 			return tmdbDetails{}, err
 		}
 
-		displayTitle := strings.TrimSpace(details.Title)
-		if displayTitle == "" {
-			displayTitle = strings.TrimSpace(details.Name)
+		value, err := decodeTMDBDetails(resp.Body, isMovie)
+		if err != nil {
+			return tmdbDetails{}, err
 		}
-		originalTitle := strings.TrimSpace(details.OriginalTitle)
-		if originalTitle == "" {
-			originalTitle = strings.TrimSpace(details.OriginalName)
-		}
-		if originalTitle == "" {
-			originalTitle = displayTitle
-		}
-
-		year := yearFromISODate(details.ReleaseDate)
-		if year == 0 {
-			year = yearFromISODate(details.FirstAirDate)
-		}
-
-		originCountries := append([]string(nil), details.OriginCountry...)
-		if len(originCountries) == 0 {
-			for _, country := range details.ProductionCountries {
-				code := strings.TrimSpace(country.ISO3166_1)
-				if code != "" {
-					originCountries = append(originCountries, code)
-				}
-			}
-		}
-
-		isAnimation := false
-		for _, g := range details.Genres {
-			if g.ID == 16 {
-				isAnimation = true
-				break
-			}
-		}
-
-		counts := make(map[int]int)
-		for _, season := range details.Seasons {
-			counts[season.SeasonNumber] = season.EpisodeCount
-		}
-
-		val := tmdbDetails{
-			DisplayTitle:        displayTitle,
-			OriginalTitle:       originalTitle,
-			Year:                year,
-			OriginCountry:       originCountries,
-			IsAnimation:         isAnimation,
-			SeasonEpisodeCounts: counts,
-		}
-
-		tmdbDetailsCache.Set(imdbID, val)
-		return val, nil
+		tmdbDetailsCache.Set(imdbID, value)
+		return value, nil
 	})
 
 	if err != nil {
@@ -499,237 +617,88 @@ func getTMDBOriginalTitle(imdbID string) string {
 	return getTMDBDetails(imdbID).OriginalTitle
 }
 
-func getTMDBAlternativeTitles(imdbID string, enableAltTitles bool, altTitleCountry string) ([]string, error) {
+func filterTMDBAlternativeTitleItems(items []tmdbAlternativeTitle, originalLanguage, altTitleCountry string) []tmdbAlternativeTitle {
+	langToCountry := map[string]string{
+		"ko": "KR", "ja": "JP", "zh": "CN", "ru": "RU",
+		"hi": "IN", "th": "TH", "vi": "VN", "tr": "TR",
+		"ar": "SA", "he": "IL", "fa": "IR",
+	}
+	originalCountry := langToCountry[strings.ToLower(strings.TrimSpace(originalLanguage))]
+	romanizedTypes := map[string]bool{
+		"romaji": true, "pinyin": true, "transliteration": true,
+		"modern title": true,
+	}
+
+	requestedCountry := strings.ToUpper(strings.TrimSpace(altTitleCountry))
+	allowAll := strings.EqualFold(strings.TrimSpace(altTitleCountry), "all")
+	seen := make(map[string]struct{}, len(items))
+	out := make([]tmdbAlternativeTitle, 0, len(items))
+	for _, item := range items {
+		item.Title = strings.TrimSpace(item.Title)
+		item.Country = strings.ToUpper(strings.TrimSpace(item.Country))
+		item.Type = strings.TrimSpace(item.Type)
+		if len(item.Title) <= 1 {
+			continue
+		}
+
+		allowed := allowAll || item.Country == "US" || item.Country == "GB" || item.Country == "CA" || item.Country == ""
+		if requestedCountry != "" && requestedCountry != "ALL" && item.Country == requestedCountry {
+			allowed = true
+		}
+		if originalCountry != "" && item.Country == originalCountry {
+			allowed = true
+		}
+		if romanizedTypes[strings.ToLower(item.Type)] {
+			allowed = true
+		}
+		if !allowed {
+			continue
+		}
+
+		key := strings.ToLower(item.Title)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, item)
+	}
+	return out
+}
+
+func getTMDBAlternativeTitleItems(imdbID string, enableAltTitles bool, altTitleCountry string) ([]tmdbAlternativeTitle, error) {
 	if !useTMDB.Load() || !enableAltTitles {
 		return nil, nil
 	}
-
-	cacheKey := fmt.Sprintf("%s:%s", imdbID, altTitleCountry)
-
-	if cached, ok := tmdbAltTitlesCache.Get(cacheKey); ok {
-		return cached, nil
-	}
-
-	res, err, _ := altTitlesSingleflight.Do(cacheKey, func() (interface{}, error) {
-		if cached, ok := tmdbAltTitlesCache.Get(cacheKey); ok {
-			return cached, nil
-		}
-
-		metaLogger.Info("TMDB: Fetching alternative titles for IMDb ID '%s' (filter: '%s')...", imdbID, altTitleCountry)
-
-		tmdbID, isMovie, origLang, err := resolveTMDBID(imdbID)
-		if err != nil || tmdbID == 0 {
-			return nil, err
-		}
-
-		var u string
-		if isMovie {
-			u = fmt.Sprintf("https://api.themoviedb.org/3/movie/%d/alternative_titles?api_key=%s", tmdbID, tmdbAPIKey)
-		} else {
-			u = fmt.Sprintf("https://api.themoviedb.org/3/tv/%d/alternative_titles?api_key=%s", tmdbID, tmdbAPIKey)
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), metaFetchTimeout)
-		defer cancel()
-
-		req, err := newMetadataRequest(ctx, u, "en-US")
-		if err != nil {
-			return nil, err
-		}
-
-		resp, err := fetchWithRetry(ctx, metadataHTTPClient, req)
-		if err != nil {
-			metaLogger.Error("TMDB: Failed to fetch alternative titles from endpoint: %v", err)
-			return nil, err
-		}
-		defer drainAndClose(resp.Body)
-
-		if resp.StatusCode != http.StatusOK {
-			metaLogger.Error("TMDB: Upstream alternative titles returned status code: %d", resp.StatusCode)
-			return nil, fmt.Errorf("TMDB alt titles error: %d", resp.StatusCode)
-		}
-
-		var data struct {
-			ID     int `json:"id"`
-			Titles []struct {
-				ISO3166_1 string `json:"iso_3166_1"`
-				Title     string `json:"title"`
-				Type      string `json:"type"`
-			} `json:"titles"`
-			Results []struct {
-				ISO3166_1 string `json:"iso_3166_1"`
-				Title     string `json:"title"`
-				Type      string `json:"type"`
-			} `json:"results"`
-		}
-
-		if err := sonic.ConfigStd.NewDecoder(resp.Body).Decode(&data); err != nil {
-			return nil, err
-		}
-
-		type altTitleItem struct {
-			ISO3166_1 string
-			Title     string
-			Type      string
-		}
-
-		var rawItems []altTitleItem
-		if len(data.Titles) > 0 {
-			for _, item := range data.Titles {
-				rawItems = append(rawItems, altTitleItem{ISO3166_1: item.ISO3166_1, Title: item.Title, Type: item.Type})
-			}
-		} else if len(data.Results) > 0 {
-			for _, item := range data.Results {
-				rawItems = append(rawItems, altTitleItem{ISO3166_1: item.ISO3166_1, Title: item.Title, Type: item.Type})
-			}
-		}
-
-		langToCountry := map[string]string{
-			"ko": "KR", "ja": "JP", "zh": "CN", "ru": "RU",
-			"hi": "IN", "th": "TH", "vi": "VN", "tr": "TR",
-			"ar": "SA", "he": "IL", "fa": "IR",
-		}
-		originalCountry := langToCountry[origLang]
-
-		romanizedTypes := map[string]bool{
-			"Romaji": true, "Pinyin": true, "Transliteration": true,
-			"Modern Title": true,
-		}
-
-		var cleanList []string
-		seen := make(map[string]bool)
-		for _, item := range rawItems {
-			t := strings.TrimSpace(item.Title)
-			if t == "" || len(t) <= 1 {
-				continue
-			}
-			if seen[t] {
-				continue
-			}
-
-			iso := strings.ToUpper(item.ISO3166_1)
-			isAllowed := false
-
-			if altTitleCountry == "all" {
-				isAllowed = true
-			} else {
-				if iso == "US" || iso == "GB" || iso == "CA" || iso == "" {
-					isAllowed = true
-				}
-				if altTitleCountry != "" && iso == strings.ToUpper(altTitleCountry) {
-					isAllowed = true
-				}
-				if originalCountry != "" && iso == originalCountry {
-					isAllowed = true
-				}
-				if romanizedTypes[item.Type] {
-					isAllowed = true
-				}
-			}
-
-			if isAllowed {
-				seen[t] = true
-				cleanList = append(cleanList, t)
-			}
-		}
-
-		tmdbAltTitlesCache.Set(cacheKey, cleanList)
-		metaLogger.Info("TMDB: Successfully resolved %d filtered alternative titles for IMDb ID '%s': %v", len(cleanList), imdbID, cleanList)
-		return cleanList, nil
-	})
-
+	_, _, originalLanguage, err := resolveTMDBID(imdbID)
 	if err != nil {
 		return nil, err
 	}
-	return res.([]string), nil
+	details := getTMDBDetails(imdbID)
+	return filterTMDBAlternativeTitleItems(details.AlternativeTitles, originalLanguage, altTitleCountry), nil
+}
+
+func getTMDBAlternativeTitles(imdbID string, enableAltTitles bool, altTitleCountry string) ([]string, error) {
+	items, err := getTMDBAlternativeTitleItems(imdbID, enableAltTitles, altTitleCountry)
+	if err != nil {
+		return nil, err
+	}
+	titles := make([]string, 0, len(items))
+	for _, item := range items {
+		titles = append(titles, item.Title)
+	}
+	return titles, nil
 }
 
 func getTMDBTranslatedTitle(imdbID, preferredLanguage string) (string, error) {
 	if !useTMDB.Load() || preferredLanguage == "" {
 		return "", nil
 	}
-
-	cacheKey := fmt.Sprintf("%s:%s", imdbID, preferredLanguage)
-
-	res, err, _ := transTitleSingleflight.Do(cacheKey, func() (interface{}, error) {
-		if cached, ok := tmdbTransTitleCache.Get(cacheKey); ok {
-			return cached, nil
-		}
-
-		tmdbLang := i18n.ConvertToTMDBLanguageCode(preferredLanguage)
-		tmdbID, isMovie, _, err := resolveTMDBID(imdbID)
-		if err != nil || tmdbID == 0 {
-			return "", err
-		}
-
-		metaLogger.Info("TMDB: Fetching translated title for IMDb ID '%s' in language '%s'...", imdbID, tmdbLang)
-
-		var transURL string
-		if isMovie {
-			transURL = fmt.Sprintf("https://api.themoviedb.org/3/movie/%d/translations?api_key=%s", tmdbID, tmdbAPIKey)
-		} else {
-			transURL = fmt.Sprintf("https://api.themoviedb.org/3/tv/%d/translations?api_key=%s", tmdbID, tmdbAPIKey)
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), metaFetchTimeout)
-		defer cancel()
-
-		req, err := newMetadataRequest(ctx, transURL, tmdbLang)
-		if err != nil {
-			return "", err
-		}
-
-		resp, err := fetchWithRetry(ctx, metadataHTTPClient, req)
-		if err != nil {
-			metaLogger.Error("TMDB: Failed to fetch translation catalog: %v", err)
-			return "", err
-		}
-		defer drainAndClose(resp.Body)
-
-		if resp.StatusCode != http.StatusOK {
-			metaLogger.Error("TMDB: Upstream translations returned status code: %d", resp.StatusCode)
-			return "", fmt.Errorf("TMDB translations error: %d", resp.StatusCode)
-		}
-
-		var transData struct {
-			Translations []struct {
-				ISO639_1 string `json:"iso_639_1"`
-				Data     struct {
-					Title string `json:"title"`
-					Name  string `json:"name"`
-				} `json:"data"`
-			} `json:"translations"`
-		}
-		if err := sonic.ConfigStd.NewDecoder(resp.Body).Decode(&transData); err != nil {
-			return "", err
-		}
-
-		for _, t := range transData.Translations {
-			if t.ISO639_1 == tmdbLang {
-				if isMovie && t.Data.Title != "" {
-					metaLogger.Info("TMDB: Resolved translation title for '%s' in '%s': '%s'", imdbID, tmdbLang, t.Data.Title)
-					tmdbTransTitleCache.Set(cacheKey, t.Data.Title)
-					return t.Data.Title, nil
-				}
-				if !isMovie && t.Data.Name != "" {
-					metaLogger.Info("TMDB: Resolved translation name for '%s' in '%s': '%s'", imdbID, tmdbLang, t.Data.Name)
-					tmdbTransTitleCache.Set(cacheKey, t.Data.Name)
-					return t.Data.Name, nil
-				}
-			}
-		}
-
-		metaLogger.Info("TMDB: No translation found for IMDb ID '%s' in language '%s'", imdbID, tmdbLang)
-		return "", nil
-	})
-
-	if err != nil {
-		return "", err
-	}
-	if res == nil {
+	tmdbLanguage := strings.ToLower(strings.TrimSpace(i18n.ConvertToTMDBLanguageCode(preferredLanguage)))
+	if tmdbLanguage == "" {
 		return "", nil
 	}
-	return res.(string), nil
+	details := getTMDBDetails(imdbID)
+	return strings.TrimSpace(details.TranslatedTitles[tmdbLanguage]), nil
 }
 
 func imdbMetaProvider(id, preferredLanguage string, enableAltTitles bool, altTitleCountry string) (MetaProviderResponse, error) {
@@ -1041,7 +1010,7 @@ func cinemetaMetaProvider(id, contentType, preferredLanguage string, enableAltTi
 		}
 	}
 
-	translitName := name
+	translitName := Transliterate(name)
 	if translitName != name && translitName != "" {
 		isDup := false
 		for _, existing := range alternatives {

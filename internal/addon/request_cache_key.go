@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-const requestCacheVersion = "v28"
+const requestCacheVersion = "v29"
 
 // buildRequestCacheKey scopes a cached Stremio stream response to every setting
 // that can materially change the returned stream set or stream URLs.

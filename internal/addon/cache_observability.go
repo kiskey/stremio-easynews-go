@@ -52,9 +52,7 @@ func metadataCacheStats() shared.CacheStats {
 	var total shared.CacheStats
 	for _, stats := range []shared.CacheStats{
 		imdbToTMDBIDCache.Stats(),
-		tmdbAltTitlesCache.Stats(),
 		tmdbDetailsCache.Stats(),
-		tmdbTransTitleCache.Stats(),
 		tmdbSeasonAirDateCache.Stats(),
 		metaResponseCache.Stats(),
 	} {

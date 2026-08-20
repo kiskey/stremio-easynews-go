@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-const canonicalMetadataVersion = "v2"
+const canonicalMetadataVersion = "v3"
 
 // CanonicalMetadata is the provider-neutral metadata model used internally
 // before projecting data into the legacy MetaProviderResponse consumed by the
@@ -298,12 +298,17 @@ func tmdbCanonicalMetaProvider(id, contentType, preferredLanguage string, enable
 	}
 
 	if enableAltTitles {
-		if altTitles, altErr := getTMDBAlternativeTitles(tt, true, altTitleCountry); altErr == nil {
-			for _, alt := range altTitles {
+		if altItems, altErr := getTMDBAlternativeTitleItems(tt, true, altTitleCountry); altErr == nil {
+			for _, alt := range altItems {
+				kind := strings.TrimSpace(alt.Type)
+				if kind == "" {
+					kind = "alternative-title"
+				}
 				variants = append(variants, TitleVariant{
-					Title:      alt,
+					Title:      alt.Title,
 					Source:     "tmdb.alternative",
-					Kind:       "alternative-title",
+					Kind:       kind,
+					Country:    alt.Country,
 					Confidence: 0.90,
 				})
 			}
