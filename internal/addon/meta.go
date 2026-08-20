@@ -8,7 +8,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -54,67 +53,8 @@ type tmdbIDMapping struct {
 	originalLanguage string
 }
 
-type cacheEntry[V any] struct {
-	value     V
-	expiresAt int64
-}
-
-type BoundedCache[K comparable, V any] struct {
-	mu         sync.RWMutex
-	data       map[K]cacheEntry[V]
-	maxEntries int
-	ttl        time.Duration
-}
-
-func NewBoundedCache[K comparable, V any](maxEntries int, ttl time.Duration) *BoundedCache[K, V] {
-	return &BoundedCache[K, V]{
-		data:       make(map[K]cacheEntry[V]),
-		maxEntries: maxEntries,
-		ttl:        ttl,
-	}
-}
-
-func (c *BoundedCache[K, V]) Get(key K) (V, bool) {
-	c.mu.RLock()
-	entry, ok := c.data[key]
-	c.mu.RUnlock()
-	if !ok {
-		var zero V
-		return zero, false
-	}
-	now := time.Now().UnixNano()
-	if now > entry.expiresAt {
-		c.mu.Lock()
-		entryCheck, okCheck := c.data[key]
-		if okCheck && now > entryCheck.expiresAt {
-			delete(c.data, key)
-		}
-		c.mu.Unlock()
-		var zero V
-		return zero, false
-	}
-	return entry.value, true
-}
-
-func (c *BoundedCache[K, V]) Set(key K, value V) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.data[key] = cacheEntry[V]{
-		value:     value,
-		expiresAt: time.Now().Add(c.ttl).UnixNano(),
-	}
-
-	if len(c.data) > c.maxEntries {
-		count := 0
-		for k := range c.data {
-			if count >= c.maxEntries/2 {
-				break
-			}
-			delete(c.data, k)
-			count++
-		}
-	}
+func NewBoundedCache[K comparable, V any](maxEntries int, ttl time.Duration) *shared.TTLCache[K, V] {
+	return shared.NewTTLCache[K, V](maxEntries, ttl)
 }
 
 type tmdbDetails struct {
@@ -132,12 +72,13 @@ type tmdbSeasonDetails struct {
 }
 
 var (
-	imdbToTMDBIDCache      = NewBoundedCache[string, tmdbIDMapping](2000, 48*time.Hour)
-	tmdbAltTitlesCache     = NewBoundedCache[string, []string](2000, 24*time.Hour)
-	tmdbDetailsCache       = NewBoundedCache[string, tmdbDetails](2000, 48*time.Hour)
-	tmdbTransTitleCache    = NewBoundedCache[string, string](2000, 24*time.Hour)
-	tmdbSeasonAirDateCache = NewBoundedCache[string, tmdbSeasonDetails](2000, 24*time.Hour)
-	metaResponseCache      = NewBoundedCache[string, MetaProviderResponse](2000, 24*time.Hour)
+	metadataCacheMaxEntries = shared.ParseIntEnv("METADATA_CACHE_ENTRIES", 2000)
+	imdbToTMDBIDCache       = NewBoundedCache[string, tmdbIDMapping](metadataCacheMaxEntries, 48*time.Hour)
+	tmdbAltTitlesCache      = NewBoundedCache[string, []string](metadataCacheMaxEntries, 24*time.Hour)
+	tmdbDetailsCache        = NewBoundedCache[string, tmdbDetails](metadataCacheMaxEntries, 48*time.Hour)
+	tmdbTransTitleCache     = NewBoundedCache[string, string](metadataCacheMaxEntries, 24*time.Hour)
+	tmdbSeasonAirDateCache  = NewBoundedCache[string, tmdbSeasonDetails](metadataCacheMaxEntries, 24*time.Hour)
+	metaResponseCache       = NewBoundedCache[string, MetaProviderResponse](metadataCacheMaxEntries, 24*time.Hour)
 
 	tmdbIDSingleflight        singleflight.Group
 	altTitlesSingleflight     singleflight.Group

@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -39,16 +38,10 @@ var sharedTransport = &http.Transport{
 // ---------------------------------------------------------------------------
 
 var (
-	sharedCache     = make(map[string]*cacheEntry)
-	sharedCacheMu   sync.RWMutex
 	maxCacheEntries = shared.ParseIntEnv("MAX_CACHE_ENTRIES", 1000)
 	cacheTTL        = time.Duration(shared.ParseIntEnv("CACHE_TTL", 24)) * time.Hour
+	sharedCache     = shared.NewTTLCache[string, EasynewsSearchResponse](maxCacheEntries, cacheTTL)
 )
-
-type cacheEntry struct {
-	data      EasynewsSearchResponse
-	timestamp int64 // UnixNano
-}
 
 // ---------------------------------------------------------------------------
 // Tier 1: Temporary Invalid Authentication Circuit Breaker Registry
@@ -131,9 +124,12 @@ func CredentialFingerprint(username, password string) string {
 
 // ClearCache resets the shared in-memory search cache.
 func ClearCache() {
-	sharedCacheMu.Lock()
-	sharedCache = make(map[string]*cacheEntry)
-	sharedCacheMu.Unlock()
+	sharedCache.Clear()
+}
+
+// SearchCacheStats returns aggregate, non-secret Easynews search-cache metrics.
+func SearchCacheStats() shared.CacheStats {
+	return sharedCache.Stats()
 }
 
 // ---------------------------------------------------------------------------
@@ -155,51 +151,15 @@ func (api *EasynewsAPI) cacheKey(opts SearchOptions) string {
 }
 
 func (api *EasynewsAPI) getFromCache(key string) *EasynewsSearchResponse {
-	sharedCacheMu.RLock()
-	entry, ok := sharedCache[key]
-	sharedCacheMu.RUnlock()
+	data, ok := sharedCache.Get(key)
 	if !ok {
 		return nil
 	}
-
-	if time.Now().UnixNano()-entry.timestamp > cacheTTL.Nanoseconds() {
-		sharedCacheMu.Lock()
-		delete(sharedCache, key)
-		sharedCacheMu.Unlock()
-		return nil
-	}
-	return &entry.data
+	return &data
 }
 
 func (api *EasynewsAPI) setCache(key string, data EasynewsSearchResponse) {
-	sharedCacheMu.Lock()
-	defer sharedCacheMu.Unlock()
-
-	sharedCache[key] = &cacheEntry{
-		data:      data,
-		timestamp: time.Now().UnixNano(),
-	}
-
-	// Memory boundary defense: evict the oldest half when cache capacity is exceeded.
-	if len(sharedCache) > maxCacheEntries {
-		type kv struct {
-			k string
-			t int64
-		}
-		entries := make([]kv, 0, len(sharedCache))
-		for k, v := range sharedCache {
-			entries = append(entries, kv{k, v.timestamp})
-		}
-
-		sort.Slice(entries, func(i, j int) bool {
-			return entries[i].t < entries[j].t
-		})
-
-		half := len(entries) / 2
-		for i := 0; i < half; i++ {
-			delete(sharedCache, entries[i].k)
-		}
-	}
+	sharedCache.Set(key, data)
 }
 
 // ---------------------------------------------------------------------------

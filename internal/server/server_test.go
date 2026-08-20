@@ -1,6 +1,10 @@
 package server
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/kiskey/stremio-easynews-go/internal/addon"
+)
 
 func TestRedactFallbackPathConfiguredRoutes(t *testing.T) {
 	t.Parallel()
@@ -23,5 +27,24 @@ func TestRedactFallbackPathConfiguredRoutes(t *testing.T) {
 				t.Fatalf("redactFallbackPath(%q) = %q, want %q", input, got, want)
 			}
 		})
+	}
+}
+
+func TestStreamCacheControlValue(t *testing.T) {
+	t.Parallel()
+
+	result := addon.StreamHandlerResult{
+		CacheMaxAge:     600,
+		StaleRevalidate: 3600,
+		StaleError:      86400,
+	}
+	got := streamCacheControlValue(result)
+	want := "max-age=600, public, stale-while-revalidate=3600, stale-if-error=86400"
+	if got != want {
+		t.Fatalf("streamCacheControlValue() = %q, want %q", got, want)
+	}
+
+	if got := streamCacheControlValue(addon.StreamHandlerResult{}); got != "" {
+		t.Fatalf("zero cache policy should not emit Cache-Control, got %q", got)
 	}
 }

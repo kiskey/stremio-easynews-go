@@ -140,58 +140,38 @@ func ParseConfig(configStr string) AddonConfig {
 }
 
 var (
-	requestCache           = make(map[string]*cacheItem)
-	requestCacheMu         sync.RWMutex
 	requestCacheMaxEntries = shared.ParseIntEnv("MAX_CACHE_ENTRIES", 1000)
+	requestCache           = shared.NewTTLCache[string, StreamHandlerResult](requestCacheMaxEntries, 0)
 	emptyResultCacheMaxAge = 10 * 60
 	errorCacheMaxAge       = 60
 )
 
-type cacheItem struct {
-	data      StreamHandlerResult
-	expiresAt int64
-}
-
 func getFromRequestCache(key string) (StreamHandlerResult, bool) {
-	requestCacheMu.RLock()
-	item, ok := requestCache[key]
-	requestCacheMu.RUnlock()
+	result, remaining, ok := requestCache.GetWithRemainingTTL(key)
 	if !ok {
 		return StreamHandlerResult{}, false
 	}
-	if time.Now().UnixNano() > item.expiresAt {
-		requestCacheMu.Lock()
-		delete(requestCache, key)
-		requestCacheMu.Unlock()
-		return StreamHandlerResult{}, false
+	if result.CacheMaxAge > 0 && remaining > 0 {
+		remainingSeconds := int((remaining + time.Second - 1) / time.Second)
+		if remainingSeconds < 1 {
+			remainingSeconds = 1
+		}
+		if remainingSeconds < result.CacheMaxAge {
+			result.CacheMaxAge = remainingSeconds
+		}
 	}
-	return item.data, true
+	return result, true
 }
 
 func setRequestCache(key string, data StreamHandlerResult, ttl time.Duration) {
-	requestCacheMu.Lock()
-	defer requestCacheMu.Unlock()
-
-	requestCache[key] = &cacheItem{
-		data:      data,
-		expiresAt: time.Now().Add(ttl).UnixNano(),
-	}
-
-	if len(requestCache) > requestCacheMaxEntries {
-		toDelete := len(requestCache) / 2
-		for k := range requestCache {
-			if toDelete <= 0 {
-				break
-			}
-			delete(requestCache, k)
-			toDelete--
-		}
-	}
+	requestCache.SetWithTTL(key, data, ttl)
 }
 
 type StreamHandlerResult struct {
-	Streams     []Stream `json:"streams"`
-	CacheMaxAge int      `json:"cacheMaxAge,omitempty"`
+	Streams         []Stream `json:"streams"`
+	CacheMaxAge     int      `json:"cacheMaxAge,omitempty"`
+	StaleRevalidate int      `json:"staleRevalidate,omitempty"`
+	StaleError      int      `json:"staleError,omitempty"`
 }
 
 func authErrorStream(langCode string) StreamHandlerResult {
@@ -289,6 +269,8 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 	if !strings.HasPrefix(id, "tt") {
 		return StreamHandlerResult{Streams: []Stream{}}, nil
 	}
+
+	defer maybeLogCacheStats()
 
 	// Tier 2: Instantiate API client early to access credentials fingerprint fast
 	easynewsAPI, err := api.NewEasynewsAPI(config.Username, config.Password)
@@ -594,10 +576,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 
 	if len(allSearchResults) == 0 {
 		addonLogger.Info("Search complete: zero results returned from Easynews Solr indices")
-		result := StreamHandlerResult{
-			Streams:     []Stream{},
-			CacheMaxAge: emptyResultCacheMaxAge,
-		}
+		result := streamResultWithCachePolicy([]Stream{}, emptyResultCacheMaxAge)
 		setRequestCache(cacheKey, result, time.Duration(emptyResultCacheMaxAge)*time.Second)
 		return result, nil
 	}
@@ -698,10 +677,7 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 
 	cacheMaxAge := getCacheMaxAge(len(streams))
 
-	result := StreamHandlerResult{
-		Streams:     streams,
-		CacheMaxAge: cacheMaxAge,
-	}
+	result := streamResultWithCachePolicy(streams, cacheMaxAge)
 
 	setRequestCache(cacheKey, result, time.Duration(cacheMaxAge)*time.Second)
 	return result, nil

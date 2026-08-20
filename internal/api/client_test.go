@@ -43,3 +43,21 @@ func TestNewEasynewsAPIUsesCredentialFingerprint(t *testing.T) {
 		t.Fatalf("unexpected credential key: got %q want %q", api.GetCredKey(), want)
 	}
 }
+
+func TestSearchCacheStatsLifecycle(t *testing.T) {
+	ClearCache()
+	defer ClearCache()
+
+	sharedCache.Set("test-key", EasynewsSearchResponse{SID: "sid"})
+	if _, ok := sharedCache.Get("test-key"); !ok {
+		t.Fatal("expected search cache hit")
+	}
+	if _, ok := sharedCache.Get("missing-key"); ok {
+		t.Fatal("unexpected search cache hit")
+	}
+
+	stats := SearchCacheStats()
+	if stats.Entries != 1 || stats.Hits != 1 || stats.Misses != 1 || stats.Sets != 1 {
+		t.Fatalf("unexpected search cache stats: %+v", stats)
+	}
+}

@@ -161,10 +161,11 @@ func ServeHTTP(port int) {
 			return
 		}
 
-		serverLogger.Info("Returned %d stream options for type=%s id=%s (cacheMaxAge=%d)", len(result.Streams), contentType, id, result.CacheMaxAge)
+		serverLogger.Info("Returned %d stream options for type=%s id=%s (cacheMaxAge=%d staleRevalidate=%d staleError=%d)",
+			len(result.Streams), contentType, id, result.CacheMaxAge, result.StaleRevalidate, result.StaleError)
 
-		if result.CacheMaxAge > 0 {
-			c.Header("Cache-Control", fmt.Sprintf("max-age=%d, public", result.CacheMaxAge))
+		if cacheControl := streamCacheControlValue(result); cacheControl != "" {
+			c.Header("Cache-Control", cacheControl)
 		}
 
 		c.JSON(http.StatusOK, result)
@@ -299,6 +300,11 @@ func ServeHTTP(port int) {
 	serverLogger.Info("MAX_PAGES: %d", shared.ParseIntEnv("MAX_PAGES", 10))
 	serverLogger.Info("MAX_RESULTS_PER_PAGE: %d", shared.ParseIntEnv("MAX_RESULTS_PER_PAGE", 250))
 	serverLogger.Info("CACHE_TTL: %d hours", shared.ParseIntEnv("CACHE_TTL", 24))
+	serverLogger.Info("MAX_CACHE_ENTRIES: %d", shared.ParseIntEnv("MAX_CACHE_ENTRIES", 1000))
+	serverLogger.Info("METADATA_CACHE_ENTRIES: %d", shared.ParseIntEnv("METADATA_CACHE_ENTRIES", 2000))
+	serverLogger.Info("CACHE_STATS_LOG_EVERY: %d requests", shared.ParseIntEnv("CACHE_STATS_LOG_EVERY", 100))
+	serverLogger.Info("STREMIO_STALE_REVALIDATE_SECONDS: %d", shared.ParseIntEnv("STREMIO_STALE_REVALIDATE_SECONDS", 3600))
+	serverLogger.Info("STREMIO_STALE_ERROR_SECONDS: %d", shared.ParseIntEnv("STREMIO_STALE_ERROR_SECONDS", 86400))
 	serverLogger.Info("--- Integrations ---")
 	if os.Getenv("TMDB_API_KEY") != "" {
 		serverLogger.Info("TMDB translations: Enabled")

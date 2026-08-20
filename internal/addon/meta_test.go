@@ -144,3 +144,20 @@ func TestTMDBAvailabilityUsesAtomicState(t *testing.T) {
 }
 
 var _ io.ReadCloser = (*trackingBody)(nil)
+
+func TestBoundedCacheUsesLRUEviction(t *testing.T) {
+	cache := NewBoundedCache[string, int](2, time.Minute)
+	cache.Set("a", 1)
+	cache.Set("b", 2)
+	if _, ok := cache.Get("a"); !ok {
+		t.Fatal("expected metadata cache hit")
+	}
+	cache.Set("c", 3)
+
+	if _, ok := cache.Get("b"); ok {
+		t.Fatal("least recently used metadata cache entry should be evicted")
+	}
+	if stats := cache.Stats(); stats.Evictions != 1 {
+		t.Fatalf("expected one metadata cache eviction, got %+v", stats)
+	}
+}
