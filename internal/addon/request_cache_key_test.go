@@ -60,18 +60,12 @@ func TestBuildRequestCacheKeyScopesEffectiveBaseURL(t *testing.T) {
 	}
 }
 
-func TestRequestCacheVersionV29(t *testing.T) {
-	if requestCacheVersion != "v29" {
-		t.Fatalf("requestCacheVersion = %q, want v29", requestCacheVersion)
+func TestRequestCacheVersionV30ForEncryptedResolverURLs(t *testing.T) {
+	if requestCacheVersion != "v30" {
+		t.Fatalf("requestCacheVersion = %q, want v30", requestCacheVersion)
 	}
 	key := buildRequestCacheKey("movie", "tt1234567", "cred", AddonConfig{})
-	if !strings.HasPrefix(key, "v29:") {
-		t.Fatalf("cache key = %q, want v29 prefix", key)
-	}
-}
-
-func TestRequestCacheVersionBumpedForEncryptedResolverURLs(t *testing.T) {
-	if requestCacheVersion != "v30" {
-		t.Fatalf("request cache version = %q, want v30", requestCacheVersion)
+	if !strings.HasPrefix(key, "v30:") {
+		t.Fatalf("cache key = %q, want v30 prefix", key)
 	}
 }
