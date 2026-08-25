@@ -4,6 +4,7 @@ import (
 	"sync/atomic"
 
 	"github.com/kiskey/stremio-easynews-go/internal/api"
+	"github.com/kiskey/stremio-easynews-go/internal/resolve"
 	"github.com/kiskey/stremio-easynews-go/internal/shared"
 )
 
@@ -20,6 +21,7 @@ type CacheStatsSnapshot struct {
 	Request  shared.CacheStats
 	Easynews shared.CacheStats
 	Metadata shared.CacheStats
+	Resolver shared.CacheStats
 }
 
 func nonNegativeInt(value int) int {
@@ -68,6 +70,7 @@ func GetCacheStats() CacheStatsSnapshot {
 		Request:  requestCache.Stats(),
 		Easynews: api.SearchCacheStats(),
 		Metadata: metadataCacheStats(),
+		Resolver: resolve.SecureResolverCacheStats(),
 	}
 }
 
@@ -81,6 +84,6 @@ func maybeLogCacheStats() {
 	}
 
 	stats := GetCacheStats()
-	addonLogger.Info("Cache stats after %d stream requests: request={%s} easynews={%s} metadata={%s}",
-		requestNumber, stats.Request.String(), stats.Easynews.String(), stats.Metadata.String())
+	addonLogger.Info("Cache stats after %d stream requests: request={%s} easynews={%s} metadata={%s} resolver={%s}",
+		requestNumber, stats.Request.String(), stats.Easynews.String(), stats.Metadata.String(), stats.Resolver.String())
 }

@@ -69,3 +69,9 @@ func TestRequestCacheVersionV29(t *testing.T) {
 		t.Fatalf("cache key = %q, want v29 prefix", key)
 	}
 }
+
+func TestRequestCacheVersionBumpedForEncryptedResolverURLs(t *testing.T) {
+	if requestCacheVersion != "v30" {
+		t.Fatalf("request cache version = %q, want v30", requestCacheVersion)
+	}
+}

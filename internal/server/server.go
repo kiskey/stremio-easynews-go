@@ -30,9 +30,13 @@ func ServeHTTP(port int) {
 	}
 
 	if err := seal.Init(); err != nil {
-		serverLogger.Warn("Seal initialization skipped: %v (falling back to legacy config mode)", err)
+		if legacyPlaintextConfigAllowed() {
+			serverLogger.Warn("Config encryption unavailable: %v (legacy plaintext compatibility is explicitly enabled)", err)
+		} else {
+			serverLogger.Error("Config encryption unavailable: %v; secure installs and encrypted resolver URLs require ADDON_CONFIG_KEY", err)
+		}
 	} else {
-		serverLogger.Info("Config encryption enabled (AES-256-GCM)")
+		serverLogger.Info("Config and resolver encryption enabled (AES-256-GCM)")
 	}
 
 	r := gin.New()
@@ -93,6 +97,11 @@ func ServeHTTP(port int) {
 
 	r.GET("/:config/manifest.json", func(c *gin.Context) {
 		configStr := c.Param("config")
+		if !configurationTokenAllowed(configStr) {
+			serverLogger.Warn("Rejected legacy plaintext manifest configuration while compatibility mode is disabled")
+			c.Status(http.StatusBadRequest)
+			return
+		}
 		config := addon.ParseConfig(configStr)
 		m := addon.BuildManifest()
 
@@ -141,7 +150,13 @@ func ServeHTTP(port int) {
 
 		var config addon.AddonConfig
 		if hasConfig {
-			config = addon.ParseConfig(c.Param("config"))
+			configStr := c.Param("config")
+			if !configurationTokenAllowed(configStr) {
+				serverLogger.Warn("Rejected legacy plaintext stream configuration while compatibility mode is disabled")
+				c.JSON(http.StatusOK, gin.H{"streams": []interface{}{}})
+				return
+			}
+			config = addon.ParseConfig(configStr)
 		} else {
 			config = addon.ParseConfig("")
 		}
@@ -183,7 +198,9 @@ func ServeHTTP(port int) {
 	// Secure Resolving Proxy Route
 	// -----------------------------------------------------------------------
 
-	r.GET("/resolve/:payload/:filename", resolve.CreateResolveHandler(serverLogger))
+	secureResolveHandler := resolve.CreateSecureResolveHandler(serverLogger)
+	r.GET("/resolve/:payload/:filename", secureResolveHandler)
+	r.HEAD("/resolve/:payload/:filename", secureResolveHandler)
 
 	// -----------------------------------------------------------------------
 	// Configuration & Dynamic Panel Routes
@@ -202,6 +219,11 @@ func ServeHTTP(port int) {
 		configStr := c.Param("config")
 		if configStr == "favicon.ico" || configStr == "manifest.json" {
 			c.Status(http.StatusNotFound)
+			return
+		}
+		if !configurationTokenAllowed(configStr) {
+			serverLogger.Warn("Rejected legacy plaintext configuration redirect while compatibility mode is disabled")
+			c.Status(http.StatusBadRequest)
 			return
 		}
 		lang := c.Query("lang")
@@ -225,6 +247,10 @@ func ServeHTTP(port int) {
 		safeLang := i18n.SanitizeUiLanguage(lang)
 
 		configStr := c.Query("config")
+		if !configurationTokenAllowed(configStr) {
+			serverLogger.Warn("Ignored legacy plaintext configure-page token while compatibility mode is disabled")
+			configStr = ""
+		}
 		config := addon.ParseConfig(configStr)
 
 		m := addon.BuildManifest()
@@ -281,6 +307,12 @@ func ServeHTTP(port int) {
 		}
 
 		html := addon.RenderConfigurePage(m)
+		html, err := hardenConfigureHTML(html)
+		if err != nil {
+			serverLogger.Error("Refusing to serve configure page because plaintext fallback hardening failed: %v", err)
+			c.String(http.StatusInternalServerError, "Secure configuration page unavailable")
+			return
+		}
 		c.String(http.StatusOK, html)
 	})
 
@@ -305,6 +337,17 @@ func ServeHTTP(port int) {
 	serverLogger.Info("CACHE_STATS_LOG_EVERY: %d requests", shared.ParseIntEnv("CACHE_STATS_LOG_EVERY", 100))
 	serverLogger.Info("STREMIO_STALE_REVALIDATE_SECONDS: %d", shared.ParseIntEnv("STREMIO_STALE_REVALIDATE_SECONDS", 3600))
 	serverLogger.Info("STREMIO_STALE_ERROR_SECONDS: %d", shared.ParseIntEnv("STREMIO_STALE_ERROR_SECONDS", 86400))
+	serverLogger.Info("RESOLVE_CACHE_TTL_SECONDS: %d", shared.ParseIntEnv("RESOLVE_CACHE_TTL_SECONDS", 300))
+	serverLogger.Info("RESOLVE_CACHE_ENTRIES: %d", shared.ParseIntEnv("RESOLVE_CACHE_ENTRIES", 5000))
+	serverLogger.Info("RESOLVE_TIMEOUT_MS: %d", shared.ParseIntEnv("RESOLVE_TIMEOUT_MS", 20000))
+	serverLogger.Info("RESOLVE_ATTEMPTS: %d", shared.ParseIntEnv("RESOLVE_ATTEMPTS", 2))
+	serverLogger.Info("RESOLVE_RETRY_DELAY_MS: %d", shared.ParseIntEnv("RESOLVE_RETRY_DELAY_MS", 250))
+	serverLogger.Info("--- Security Compatibility ---")
+	serverLogger.Info("ALLOW_LEGACY_PLAINTEXT_CONFIG: %v", legacyPlaintextConfigAllowed())
+	serverLogger.Info("ALLOW_LEGACY_RESOLVE_PAYLOADS: %v", resolve.LegacyResolvePayloadsAllowed())
+	if legacyPlaintextConfigAllowed() || resolve.LegacyResolvePayloadsAllowed() || strings.EqualFold(strings.TrimSpace(os.Getenv("ALLOW_INSECURE_CREDENTIAL_URLS")), "true") {
+		serverLogger.Warn("One or more legacy credential-exposure compatibility modes are enabled")
+	}
 	serverLogger.Info("--- Integrations ---")
 	serverLogger.Info("TMDB metadata: %s", tmdbIntegrationStatus())
 	serverLogger.Info("-----------------------------------")
@@ -348,6 +391,7 @@ func redactFallbackPath(path string) string {
 	}
 
 	if len(parts) == 1 && (strings.HasPrefix(parts[0], "enc.") ||
+		strings.HasPrefix(parts[0], "encs.") ||
 		strings.Contains(parts[0], "username=") ||
 		strings.Contains(parts[0], "password=")) {
 		return "/<config>"

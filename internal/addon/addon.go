@@ -195,7 +195,7 @@ func configErrorStream() StreamHandlerResult {
 		Streams: []Stream{
 			{
 				Name:        "Easynews++ Config Error",
-				Description: "This addon needs to be reconfigured. Open its configuration page and re-install, or set the ADDON_BASE_URL environment variable.",
+				Description: "This addon needs to be reconfigured. Ensure ADDON_BASE_URL and ADDON_CONFIG_KEY are set on the server, then open the configuration page and re-install.",
 				URL:         "https://example.com/error",
 				BehaviorHints: &BehaviorHints{
 					NotWebReady: true,
@@ -629,15 +629,16 @@ func StreamHandler(contentType, id string, config AddonConfig) (StreamHandlerRes
 			parsedInfo := evaluation.Parsed
 
 			streamPath := CreateStreamPath(file)
-			streamUrl, err := CreateStreamUrl(
+			streamUrl, err := CreateSecureStreamURL(
 				sr.result.DownURL, sr.result.DlFarm, sr.result.DlPort,
 				config.Username, config.Password, streamPath, config.BaseUrl,
 			)
 			if err != nil {
-				if _, isMissing := err.(*MissingBaseUrlError); isMissing {
-					addonLogger.Error("Failed to map stream: missing ADDON_BASE_URL context")
+				if isStreamURLConfigurationError(err) {
+					addonLogger.Error("Failed to map stream: secure resolver configuration unavailable: %v", err)
 					return configErrorStream(), nil
 				}
+				addonLogger.Debug("Failed to create secure stream URL: %v", err)
 				continue
 			}
 
